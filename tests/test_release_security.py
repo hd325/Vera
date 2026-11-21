@@ -255,5 +255,29 @@ class IsolatedParserTests(unittest.IsolatedAsyncioTestCase):
         await self.exercise_interrupt(True)
 
 
+class ThreadDispatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dispatch_forwards_positional_and_keyword_arguments(self):
+        from services.resource_limits import await_thread_completion
+        def operation(document, *, catalog_only):
+            return document, catalog_only
+        self.assertEqual(await await_thread_completion(operation, "synthetic", catalog_only=True),
+                         ("synthetic", True))
+
+    async def test_planner_requires_certificate_verification(self):
+        import httpx
+        from services.turn_planner import plan_turn
+        original = httpx.AsyncClient
+        options = []
+        def factory(**kwargs):
+            options.append(kwargs)
+            return original(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={
+                "choices":[{"message":{"content":json.dumps({"action":"answer", "source":"none"})}}]})), **kwargs)
+        with patch("services.turn_planner.httpx.AsyncClient", side_effect=factory):
+            plan = await plan_turn({"LLM_API_KEY":"offline-fixture", "LLM_API_URL":"https://offline.invalid/plan"}, "問題", [])
+        self.assertEqual(plan["action"], "answer")
+        self.assertTrue(options)
+        self.assertTrue(all(item["verify"] is True for item in options))
+
+
 if __name__ == '__main__':
     unittest.main()

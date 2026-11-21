@@ -348,17 +348,16 @@ class ReviewApiTests(unittest.TestCase):
         private = self.submit(audience="personal", headers=self.other)
         teacher_file = self.submit(headers=self.teacher)
         own_private = self.submit(audience="personal")
-        self.vector._collection.get.return_value = {"metadatas": [
-            {"document_id": file_id, "audience": "school", "review_status": "published"}
-            for file_id in (pending, rejected, private, teacher_file, own_private)
-        ] + [
-            {"document_id": "legacy-school", "audience": "school"},
-            {"document_id": "legacy-private", "audience": "personal", "owner": "review-other"},
-            {"document_id": "unpublished-vector", "audience": "school", "review_status": "pending"},
-            {"document_id": "no-permission-metadata"},
-        ]}
-        result = asyncio.run(main.retrieval_permission_filter("review-student"))
-        self.assertEqual(set(result["document_id"]["$in"]), {teacher_file, own_private, "legacy-school"})
+        async def check():
+            allowed = []
+            for file_id in (pending, rejected, private, teacher_file, own_private):
+                if await main._authorized_turn_file(file_id, "review-student"):
+                    allowed.append(file_id)
+            return allowed
+        self.assertEqual(set(asyncio.run(check())), {teacher_file, own_private})
+        # A legacy vector without explicit permission metadata must also fail closed.
+        self.vector._collection.get.return_value = {"metadatas": [{"document_id": "no-permission-metadata"}]}
+        self.assertIsNone(asyncio.run(main._authorized_turn_file("no-permission-metadata", "review-student")))
 
     def test_approval_missing_original_never_publishes(self):
         file_id = self.submit()

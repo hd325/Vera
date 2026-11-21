@@ -23,26 +23,32 @@ from docx import Document
 import tests  # Establish synthetic-only storage before application imports.
 from services.file_agent import agent as agent_module
 from services.file_agent import runtime as runtime_module
-from services.file_agent.agent import DeepSeekFileAgent, should_handle
+from services.file_agent.agent import LLMFileAgent
+from services.turn_planner import plan_turn
 from services.file_agent.runtime import FileAgentError, TaskRuntime, safe_child, user_key
 
 
-class FileAgentRoutingTests(unittest.TestCase):
-    def test_normal_questions_do_not_activate_file_tools(self):
-        for question in ("你好", "解釋牛頓第二定律", "PDF 是甚麼格式？", "Excel 的 SUM 函數是甚麼？"):
+class FileAgentRoutingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_model_plan_selects_chat_or_tools_without_keyword_rules(self):
+        for question, action, formats in [("PDF 是甚麼？", "answer", []),
+                                           ("給我一份 PDF", "create", ["pdf"]),
+                                           ("第二段需要調整", "edit", ["docx"])]:
             with self.subTest(question=question):
-                self.assertFalse(should_handle(question))
+                requests = []
+                def respond(request):
+                    requests.append(json.loads(request.content))
+                    return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({
+                        "action": action, "source": "none" if action != "edit" else "previous",
+                        "formats": formats})}}]})
+                real = httpx.AsyncClient
+                with patch("services.turn_planner.httpx.AsyncClient", side_effect=lambda **kw:
+                           real(transport=httpx.MockTransport(respond), **kw)):
+                    plan = await plan_turn({"LLM_API_KEY": "offline-test-key",
+                                            "LLM_API_URL": "https://offline.invalid/plan"}, question, [])
+                self.assertEqual(plan["action"], action)
+                self.assertEqual(plan["formats"], formats)
+                self.assertEqual(len(requests), 1)
 
-    def test_referenced_file_questions_without_edit_request_stay_in_normal_chat(self):
-        for question in ("請解釋資料的主要觀點", "根據校曆，今天有甚麼活動？"):
-            with self.subTest(question=question):
-                self.assertFalse(should_handle(question, "校曆.pdf", ["source-id"]))
-
-    def test_creation_and_followup_edit_requests_activate_tools(self):
-        self.assertTrue(should_handle("生成一份 PDF"))
-        self.assertTrue(should_handle("把資料整理成 Excel", "校曆.pdf", ["source-id"]))
-        self.assertTrue(should_handle("修改第二段", messages=[{"is_user": False, "artifacts": [{"id": "generated"}]}]))
-        self.assertFalse(should_handle("繼續解釋這個概念", messages=[{"is_user": False, "artifacts": [{"id": "generated"}]}]))
 
 
 class FileAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
@@ -135,7 +141,7 @@ class FileAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("paged", self.runtime.read_ids)
 
     async def test_image_without_ocr_is_only_an_asset_not_readable_text(self):
-        import fitz
+        import pymupdf as fitz
         source = self.base / "image.png"
         pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 8, 8), False)
         pix.clear_with(255)
@@ -147,7 +153,7 @@ class FileAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("image", self.runtime.asset_ids)
 
     async def test_scanned_pdf_without_complete_ocr_is_an_explicit_error(self):
-        import fitz
+        import pymupdf as fitz
         source = self.base / "scan.pdf"
         pdf = fitz.open()
         pdf.new_page()
@@ -175,13 +181,13 @@ class FileAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
             async with original_stdio(parameters, **kwargs) as streams:
                 yield streams
 
-        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "DO_NOT_INHERIT_PROVIDER_SECRET",
+        with patch.dict(os.environ, {"LLM_API_KEY": "DO_NOT_INHERIT_PROVIDER_SECRET",
                                      "PRIVATE_TASK_TEST_SECRET": "DO_NOT_INHERIT_OTHER_SECRET"}), \
              patch("mcp.client.stdio.stdio_client", checked):
             result = await self.runtime.call("read_file", {"file_id": "source-a"})
         self.assertIn("ALICE_PRIVATE_DOCUMENT", json.dumps(result))
         self.assertEqual(len(captured), 1)
-        self.assertNotIn("DEEPSEEK_API_KEY", captured[0])
+        self.assertNotIn("LLM_API_KEY", captured[0])
         self.assertNotIn("PRIVATE_TASK_TEST_SECRET", captured[0])
         self.assertEqual(captured[0]["TEMP"], str(self.runtime.root))
         self.assertEqual(captured[0]["TMP"], str(self.runtime.root))
@@ -248,13 +254,13 @@ class FileAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(child.stdout.splitlines(), [str(768 * 1024**2), "True"])
 
 
-class DeepSeekFileAgentHttpTests(unittest.IsolatedAsyncioTestCase):
+class LLMFileAgentHttpTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="hk_file_agent_http_")
         self.runtime = TaskRuntime(Path(self.temp.name) / "uploads", "alice", "conversation-a")
-        self.config = {"DEEPSEEK_API_KEY": "offline-test-key", "DEEPSEEK_API_URL": "https://deepseek.invalid/chat/completions"}
+        self.config = {"LLM_API_KEY": "offline-test-key", "LLM_API_URL": "https://deepseek.invalid/chat/completions"}
         self.authorize = AsyncMock()
-        self.agent = DeepSeekFileAgent(self.runtime, self.config, self.authorize)
+        self.agent = LLMFileAgent(self.runtime, self.config, self.authorize)
         self.requests = []
         self.real_client = httpx.AsyncClient
 
@@ -270,7 +276,7 @@ class DeepSeekFileAgentHttpTests(unittest.IsolatedAsyncioTestCase):
         body = json.loads(request.content)
         self.requests.append(body)
         self.assertEqual(request.headers["authorization"], "Bearer offline-test-key")
-        self.assertEqual(body["model"], "deepseek-flash")
+        self.assertEqual(body["model"], "deepseek-v4.1-flash-1017")
         self.assertEqual(body["thinking"], {"type": "disabled"})
         self.assertFalse(body["stream"])
         self.assertEqual(body["tool_choice"], "auto")

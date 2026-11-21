@@ -20,7 +20,8 @@ import tests  # Establish synthetic-only storage before application imports.
 import main
 from tests.account_fixtures import fixture_accounts
 import httpx
-from services.file_agent.agent import DeepSeekFileAgent
+from services.file_agent.agent import LLMFileAgent
+from services.turn_planner import default_plan
 
 
 class FileAgentApiTests(unittest.TestCase):
@@ -32,7 +33,9 @@ class FileAgentApiTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.uploads = self.root / "uploads"
         self.uploads.mkdir()
-        self.patches = [patch.object(main, "DATA_DIR", str(self.root)),
+        self.planner = AsyncMock(side_effect=lambda *a, **k: dict(self.plan))
+        self.plan = {**default_plan(), "action": "create", "source": "none", "planned": True}
+        self.patches = [patch.object(main, "plan_turn", self.planner), patch.object(main, "DATA_DIR", str(self.root)),
                         patch.object(main, "UPLOAD_DIR", str(self.uploads)),
                         patch.object(main, "CONVERSATIONS_FILE", str(self.root / "conversations.json")),
                         patch.object(main, "SESSIONS_FILE", str(self.root / "sessions.json")),
@@ -77,7 +80,7 @@ class FileAgentApiTests(unittest.TestCase):
     def model(self, steps):
         remaining = iter(steps)
 
-        async def complete(agent, messages, tools):
+        async def complete(agent, messages, tools, **options):
             step = next(remaining, None)
             if step is None:
                 return {"content": json.dumps({"status": "complete", "summary": "已完成。",
@@ -85,9 +88,14 @@ class FileAgentApiTests(unittest.TestCase):
             if callable(step):
                 step = step(messages)
             name, arguments = step
+            if options.get("structured"):
+                while name not in {"create_file", "edit_file"}:
+                    step = next(remaining)
+                    name, arguments = step
+                return {"content": json.dumps({k:v for k,v in arguments.items() if k in {"filename", "content", "operations"}})}
             return {"content": "", "tool_calls": [{"id": "call-" + str(len(messages)), "type": "function",
                       "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)}}]}
-        return patch.object(DeepSeekFileAgent, "complete", complete)
+        return patch.object(LLMFileAgent, "complete", complete)
 
     def test_no_authentication_never_runs_tools(self):
         response = self.client.post("/api/chat", json={"question": "生成 PDF", "session_id": "session-alice"})
@@ -97,7 +105,7 @@ class FileAgentApiTests(unittest.TestCase):
         path = self.uploads / "secret.txt"
         path.write_text("BOB_PRIVATE_TEXT", encoding="utf-8")
         self.add("bob-secret", path, "bob")
-        with patch.object(DeepSeekFileAgent, "complete", side_effect=AssertionError("must not call AI")):
+        with patch.object(LLMFileAgent, "complete", side_effect=AssertionError("must not call AI")):
             response = self.ask("把引用文件生成 PDF", ["bob-secret"])
         self.assertEqual(response.status_code, 403)
         self.assertNotIn("BOB_PRIVATE_TEXT", response.text)
@@ -110,10 +118,14 @@ class FileAgentApiTests(unittest.TestCase):
         response = self.ask("修改 Word", ["secret"], session_id="session-bob")
         self.assertEqual(response.status_code, 403)
 
-    def test_other_users_conversation_is_rejected(self):
+    def test_foreign_current_conversation_is_replaced_without_mutation(self):
         self.store._sessions["session-alice"]["current_conversation_id"] = "conversation-bob"
-        response = self.ask("生成 Excel")
-        self.assertEqual(response.status_code, 403)
+        before = copy.deepcopy(self.store._conversations["conversation-bob"])
+        with self.model([("create_file", {"format": "docx", "filename": "own.docx", "content": {"paragraphs": ["own"]}})]):
+            response = self.ask("生成文件")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.store._conversations["conversation-bob"], before)
+        self.assertNotEqual(self.store._sessions["session-alice"]["current_conversation_id"], "conversation-bob")
 
     def test_missing_original_returns_explicit_error(self):
         self.store._files = [{"id": "missing", "name": "missing.docx", "owner": "alice", "audience": "personal"}]
@@ -189,6 +201,7 @@ class FileAgentApiTests(unittest.TestCase):
         followup = [("read_file", {"file_id": artifact["id"]}),
                     ("edit_file", {"file_id": artifact["id"], "filename": "lesson-v3.docx",
                                    "operations": [{"op": "set_paragraph", "index": 1, "text": "Follow-up paragraph."}]})]
+        self.plan.update(action="edit", source="previous")
         with self.model(followup):
             more = self.events(self.ask("继续修改上一版 Word 第2段为 Follow-up paragraph."))
         self.assertEqual(more[-1]["type"], "done", more)
@@ -213,7 +226,7 @@ class FileAgentApiTests(unittest.TestCase):
                 return await asyncio.gather(*[client.post("/api/chat", headers={"X-Session-ID": "session-" + user},
                     json={"question": "生成个人 Word", "session_id": "session-" + user}) for user in ("alice", "bob")])
 
-        with patch.object(DeepSeekFileAgent, "complete", complete):
+        with patch.object(LLMFileAgent, "complete", complete):
             responses = asyncio.run(run_both())
             self.assertEqual(sorted(item.status_code for item in responses), [200, 429])
             # Once the admitted job ends, the rejected user can retry normally.
@@ -234,6 +247,8 @@ class FileAgentApiTests(unittest.TestCase):
             self.assertEqual(wrong.status_code, 403)
 
     def test_same_conversation_race_is_rejected_after_async_reference_lookup(self):
+        from services.file_agent.integration import maybe_file_response
+        from fastapi import HTTPException
         original = self.store.get_all_files
         async def exercise():
             ready = asyncio.Event()
@@ -244,17 +259,21 @@ class FileAgentApiTests(unittest.TestCase):
                 entered += 1
                 if entered == 2:
                     ready.set()
-                await ready.wait()
+                await asyncio.wait_for(ready.wait(), 5)
                 return result
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://local.test") as client:
-                with patch.object(self.store, "get_all_files", synchronized):
-                    return await asyncio.gather(*[client.post("/api/chat", headers={"X-Session-ID": "session-alice"},
-                        json={"question": "生成 Word", "session_id": "session-alice"}) for _ in range(2)])
-        with self.model([("create_file", {"format": "docx", "filename": "test.docx", "content": {"paragraphs": ["test"]}})]):
-            responses = asyncio.run(exercise())
-        self.assertEqual(sorted(item.status_code for item in responses), [200, 409])
-        successful = next(item for item in responses if item.status_code == 200)
-        self.assertEqual(self.events(successful)[-1]["type"], "done")
+            request = main.QuestionRequest(question="生成 Word", session_id="session-alice")
+            with patch.object(self.store, "get_all_files", synchronized):
+                results = await asyncio.gather(*[
+                    maybe_file_response(main, request, "session-alice", plan=dict(self.plan), chosen=[])
+                    for _ in range(2)], return_exceptions=True)
+            errors = [r for r in results if isinstance(r, HTTPException)]
+            self.assertEqual([e.status_code for e in errors], [409])
+            response = next(r for r in results if not isinstance(r, BaseException))
+            wire = "".join([chunk async for chunk in response.body_iterator])
+            events = [json.loads(line[6:]) for line in wire.splitlines() if line.startswith("data: ")]
+            self.assertEqual(events[-1]["type"], "done", events)
+        with self.model([("create_file", {"format":"docx", "filename":"test.docx", "content":{"paragraphs":["test"]}})]):
+            asyncio.run(exercise())
 
     def test_large_excel_generation_does_not_fail_due_to_searchable_preview(self):
         rows = [[f"entry-{r}-{c}" for c in range(10)] for r in range(120)]

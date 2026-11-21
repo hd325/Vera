@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import jieba
+import zhconv
 from rank_bm25 import BM25Okapi
 
 
@@ -43,7 +44,7 @@ def tokenize_for_bm25(text: str) -> List[str]:
     token in addition to jieba's component tokens. This improves exact-term
     recall without compromising Chinese word segmentation.
     """
-    normalized = str(text or "").strip().lower()
+    normalized = zhconv.convert(str(text or ""), "zh-cn").strip().lower()
     if not normalized:
         return []
     tokens = [
@@ -51,6 +52,10 @@ def tokenize_for_bm25(text: str) -> List[str]:
         for token in jieba.cut(normalized, cut_all=False)
         if token.strip() and not _ONLY_PUNCTUATION_RE.match(token.strip())
     ]
+    for token in jieba.cut_for_search(normalized):
+        cleaned = token.strip()
+        if cleaned and not _ONLY_PUNCTUATION_RE.match(cleaned) and cleaned not in tokens:
+            tokens.append(cleaned)
     for term in _TERM_RE.findall(normalized):
         if term not in tokens:
             tokens.append(term)
@@ -159,7 +164,16 @@ class BM25Index:
             chunk_ids = chunk_ids[:size]
             documents = documents[:size]
             metadatas = metadatas[:size]
-            corpus = [tokenize_for_bm25(document) for document in documents]
+            corpus = []
+            for index, document in enumerate(documents):
+                meta = metadatas[index] if index < len(metadatas) else {}
+                header_parts = [
+                    str(meta.get(field) or "")
+                    for field in ("filename", "material_custom", "subject_custom", "notes")
+                    if meta.get(field)
+                ]
+                combined = ("\n".join(header_parts) + "\n" + document) if header_parts else document
+                corpus.append(tokenize_for_bm25(combined))
             model = BM25Okapi(corpus) if corpus and any(corpus) else None
             self._snapshot = _BM25Snapshot(
                 key, chunk_ids, documents, metadatas, model
@@ -271,6 +285,7 @@ def _citation(
     """Build a stable source anchor for the front-end [N] badge."""
     filename = item.get("filename") or "未知文件"
     page = item.get("page") or 1
+    location = item.get("location") or f"第{page}页"
     return {
         "chunk_id": item.get("chunk_id"),
         "document_id": item.get("document_id"),
@@ -279,7 +294,8 @@ def _citation(
         "char_start": item.get("char_start"),
         "char_end": item.get("char_end"),
         "snippet": str(item.get("content") or "")[:snippet_chars],
-        "label": f"《{filename}》第{page}页",
+        "label": f"《{filename}》{location}",
+        "location": location,
     }
 
 
@@ -526,9 +542,10 @@ def format_reference_block(chunks: List[Dict[str, object]]) -> str:
     lines = []
     for index, chunk in enumerate(chunks, 1):
         page = chunk.get("page") or 1
+        location = chunk.get("location") or f"第{page}页"
         filename = chunk.get("filename") or "资料"
         lines.append(
-            f"[{index}] 来源：《{filename}》第{page}页\n{chunk.get('content', '')}"
+            f"[{index}] 来源：《{filename}》{location}\n{chunk.get('content', '')}"
         )
     return "\n---\n".join(lines)
 
@@ -546,6 +563,7 @@ def build_citation_payload(
                 "chunk_id": chunk.get("chunk_id"),
                 "document_id": chunk.get("document_id"),
                 "page": chunk.get("page"),
+                "location": chunk.get("location"),
                 "filename": chunk.get("filename"),
                 "snippet": (chunk.get("content") or "")[:200],
                 "char_start": chunk.get("char_start"),

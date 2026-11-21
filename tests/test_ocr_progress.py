@@ -74,7 +74,7 @@ class OCRProgressTests(unittest.TestCase):
         self.assertEqual(text, "識別文字")
         self.assertEqual(events, [{"type": "ocr_started", "total": None}, {"type": "ocr_done"}])
         self.client.recognize_general_text.assert_called_once()
-        self.prepare.assert_called_once_with(b"fixture")
+        self.prepare.assert_called_once_with(b"fixture", compact_jpeg=False)
         self.encode.assert_called_once_with(b"prepared-image")
         self.sleep.assert_not_called()
 

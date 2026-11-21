@@ -16,21 +16,23 @@ import logging
 import os
 import shutil
 import threading
+import time
 import uuid
 from pathlib import Path
-from chromadb.config import Settings
+from types import SimpleNamespace
 from typing import Dict, List, Optional
 
 import chromadb
 from services.chunker import PageAwareChunker
-from services.knowledge.embedder import LocalEmbedder, TfidfEmbedder, get_embedder
+from services.knowledge.embedder import LocalEmbedder, TfidfEmbedder, get_embedder, embedding_collection_name
+from chromadb.config import Settings
 from services.review_policy import is_published_record
 
 logger = logging.getLogger("vector_store")
 
 # 项目目录可能包含中文。Chroma 1.5.x 的 Windows Rust/HNSW 后端在非 ASCII
 # 持久化路径下会写入成功、但进程重开时报 "Error loading hnsw index"。
-from config.settings import CHROMA_DIR as CONFIGURED_CHROMA_DIR
+from config.settings import CHROMA_DIR as CONFIGURED_CHROMA_DIR, EMBEDDING_BACKEND, LOCAL_EMBEDDING_MODEL
 CHROMA_DIR = str(CONFIGURED_CHROMA_DIR)
 
 # 图片扩展名（需包裹为单页）
@@ -44,6 +46,11 @@ _META_FIELDS = (
     "char_start",
     "char_end",
     "subject",
+    "subject_custom",
+    "material_type",
+    "material_custom",
+    "study_period",
+    "notes",
     "audience",
     "owner",
     "grade",
@@ -61,7 +68,7 @@ def _index_metadata(file_info: Dict[str, object]) -> Dict[str, object]:
         "owner": file_info.get("owner", "") or "",
         "grade": file_info.get("grade", "") or "",
     }
-    for field in ("review_status", "publisher_role", "audience_class", "audience_grade"):
+    for field in ("review_status", "publisher_role", "audience_class", "audience_grade", "subject_custom", "material_type", "material_custom", "study_period", "notes"):
         if file_info.get(field) is not None:
             metadata[field] = file_info[field]
     return metadata
@@ -87,7 +94,7 @@ class VectorStore:
         # In-process generation used by the hybrid retriever to refresh its
         # cached BM25 corpus whenever this store is mutated.
         self._index_revision = 0
-        self._collection_name = f"hk_knowledge_{self._embedder.name}_{self._embedder.dim}"
+        self._collection_name = embedding_collection_name(self._embedder)
         self._collection = self._client.get_or_create_collection(
             name=self._collection_name,
             metadata={"hnsw:space": "cosine"},
@@ -97,7 +104,7 @@ class VectorStore:
     # ------------------------------------------------------------------
     # 索引编排
     # ------------------------------------------------------------------
-    def index_document(self, file_info: Dict[str, object], content: str) -> int:
+    def index_document(self, file_info: Dict[str, object], content: str, progress_callback=None) -> int:
         """
         切块 → 向量化 → 入库。返回新增/更新的块数量。
 
@@ -147,13 +154,17 @@ class VectorStore:
         for c in chunks:
             metas.append({k: c.get(k) for k in _META_FIELDS if c.get(k) is not None})
 
-        # Limit Python float/vector expansion even for fragmented text.
-        for offset in range(0, len(docs), 32):
-            end = offset + 32
-            embeddings = self._embedder.embed(docs[offset:end])
-            self._collection.upsert(ids=ids[offset:end], documents=docs[offset:end],
-                                    metadatas=metas[offset:end], embeddings=embeddings)
-        self._index_revision += 1
+        batch_size = 16 if progress_callback else 32
+        if progress_callback:
+            progress_callback(0, len(docs))
+        for start in range(0, len(docs), batch_size):
+            end = min(start + batch_size, len(docs))
+            embeddings = self._embedder.embed(docs[start:end])
+            self._collection.upsert(ids=ids[start:end], documents=docs[start:end],
+                                    metadatas=metas[start:end], embeddings=embeddings)
+            self._index_revision += 1
+            if progress_callback:
+                progress_callback(end, len(docs))
         logger.info(
             f"✅ 入库完成: {filename} → {len(chunks)} 块 (backend={self._embedder.name})"
         )
@@ -165,6 +176,7 @@ class VectorStore:
     def bulk_index_documents(self, items: List) -> int:
         """Process one bounded document at a time, never retain corpus vectors."""
         return sum(self.index_document(file_info, content) for file_info, content in items)
+
 
     # ------------------------------------------------------------------
     # 检索
@@ -383,6 +395,7 @@ class VectorStore:
 # 单例 + 工具
 # ----------------------------------------------------------------------
 _STORE: "VectorStore | None" = None
+_STORE_LOCK = threading.Lock()
 _CATALOG_STORE = None
 _CATALOG_KEY = None
 _CATALOG_LOCK = threading.Lock()
@@ -405,13 +418,15 @@ class _CatalogStore:
         self._index_revision = 0
         self._backend = backend
         self._dim = dim
+        self._collection_name = embedding_collection_name(SimpleNamespace(name=backend, dim=dim,
+                                                                          model_identity=LOCAL_EMBEDDING_MODEL))
 
     def stats(self):
         """Describe the selected catalog without initializing an embedding model."""
         return {
             "backend": self._backend,
             "dim": self._dim,
-            "collection": f"hk_knowledge_{self._backend}_{self._dim}",
+            "collection": self._collection_name,
             "total_chunks": self._collection.count(),
         }
 
@@ -420,9 +435,10 @@ def _get_catalog_store():
     global _CATALOG_STORE, _CATALOG_KEY
     # Local model identity is declared on the class and does not require loading
     # torch/model weights. Keep auto/cloud fallback selection in the real factory.
-    if os.environ.get("EMBEDDING_BACKEND", "tfidf").lower() != LocalEmbedder.name:
+    if os.environ.get("EMBEDDING_BACKEND", EMBEDDING_BACKEND).lower() != LocalEmbedder.name:
         return None
-    collection_name = f"hk_knowledge_{LocalEmbedder.name}_{LocalEmbedder.dim}"
+    collection_name = embedding_collection_name(SimpleNamespace(name=LocalEmbedder.name,
+        dim=LocalEmbedder.dim, model_identity=LOCAL_EMBEDDING_MODEL))
     key = (CHROMA_DIR, collection_name)
     with _CATALOG_LOCK:
         if _CATALOG_STORE is not None and _CATALOG_KEY == key:
@@ -437,7 +453,7 @@ def _get_catalog_store():
             # The local factory's only fallback is TF-IDF. Its constructor only
             # declares dimensions; no embedding/probe or model loading occurs.
             fallback = TfidfEmbedder()
-            fallback_name = f"hk_knowledge_{fallback.name}_{fallback.dim}"
+            fallback_name = embedding_collection_name(fallback)
             try:
                 collection = client.get_collection(name=fallback_name, embedding_function=None)
             except chromadb.errors.NotFoundError:
@@ -454,19 +470,29 @@ def get_vector_store(*, catalog_only: bool = False) -> "VectorStore | _CatalogSt
     global _STORE
     # Once RAG initializes, its chosen backend and mutation revision are the
     # authority, including a backend fallback selected by get_embedder().
-    if _STORE is not None:
-        return _STORE
+    store = _STORE
+    if store is not None:
+        return store
     if catalog_only:
         catalog = _get_catalog_store()
         if catalog is not None:
-            return catalog
-    if _STORE is None:
-        _STORE = VectorStore()
-    return _STORE
+            # A RAG worker may have finished while the metadata view was opened.
+            store = _STORE
+            return store if store is not None else catalog
+    # Loading the local model is expensive. Concurrent retrieval/index workers
+    # must share one initialization rather than loading duplicate models.
+    with _STORE_LOCK:
+        if _STORE is None:
+            started = time.perf_counter()
+            _STORE = VectorStore()
+            logger.info("向量检索初始化完成：耗时 %.1f ms", (time.perf_counter() - started) * 1000)
+        return _STORE
 
 
 def reset_vector_store() -> None:
     global _STORE, _CATALOG_STORE, _CATALOG_KEY
-    _STORE = None
-    _CATALOG_STORE = None
-    _CATALOG_KEY = None
+    # Keep reset atomic with both real-store and metadata-only initialization.
+    with _STORE_LOCK, _CATALOG_LOCK:
+        _STORE = None
+        _CATALOG_STORE = None
+        _CATALOG_KEY = None

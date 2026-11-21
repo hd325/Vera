@@ -1,6 +1,6 @@
 # 第三方資源聲明
 
-以下聲明適用於各第三方資源。各項授權不授予對整個 HouKongIntellect 專案的統一授權，也不表示原作者對本專案提供背書。
+以下聲明適用於各第三方資源。各項授權不授予對整個 Vera 專案的統一授權，也不表示原作者對本專案提供背書。
 
 ## 隨倉庫提供的前端資源
 
@@ -38,3 +38,9 @@ Marked 和 Tailwind 的現有瀏覽器檔案沒有可核實的完整套件版本
 核心、開發、文件編輯及本地模型依賴分別由 `requirements.txt`、`requirements-dev.txt`、`requirements-file-agent.txt` 和 `requirements-local.txt` 安裝，套件本身不隨倉庫重新打包。各套件仍適用自己的授權及通知。
 
 可選本地模型預設為 [shibing624/text2vec-base-chinese](https://huggingface.co/shibing624/text2vec-base-chinese)，由部署者另行下載。使用前請閱讀該版本的模型卡與授權；模型權重不包含在本倉庫內。
+
+## 可選微信接入與外部服務
+
+`integrations/openclaw-wechat/` 提供 Vera 的適配源碼及插件資訊。OpenClaw、騰訊微信插件、Node.js 及其依賴由部署者另行安裝；倉庫不附帶它們的已安裝運行副本、私人 profile 或帳號資料。使用時應保留各套件自身的授權與通知，版本約束見 [接入說明](integrations/openclaw-wechat/README.md)。產品名稱、服務商名稱與商標仍屬其各自權利人。
+
+華為雲 MaaS／OCR、Serper、DeepSeek Fetch、可選驗證碼及瀏覽器語音識別屬外部服務或平台功能；相應服務條款、權限、費用及資料處理規則由部署者另行確認。這份文件不提供服務帳號、密鑰、使用額度或對外部服務可用性的保證。

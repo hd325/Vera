@@ -15,6 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 
 MAX_INPUT_BYTES = 50 * 1024 * 1024
+from services.resource_limits import validate_pdf
 MAX_TASK_BYTES = 150 * 1024 * 1024
 MAX_OUTPUTS = 8
 TOOL_TIMEOUT = 55
@@ -83,6 +84,45 @@ class TaskRuntime:
         if len(self.generated) > MAX_OUTPUTS:
             raise FileAgentError("一次最多產生 8 個檔案。")
 
+    def write_checkpoint(self, *, agent=None):
+        """Save only trusted task-relative paths; callers choose when a step settled."""
+        paths = {key: safe_child(self.root, value).relative_to(self.root).as_posix() for key, value in self.paths.items()}
+        value = {"version": 1, "task_id": self.task_id, "user_key": user_key(self.user_id),
+                 "conversation_id": self.conversation_id, "paths": paths, "records": self.records,
+                 "generated": {key: {k: v for k, v in item.items() if k != "path"} for key, item in self.generated.items()},
+                 "ocr_text": self.ocr_text, "read_ids": sorted(self.read_ids), "asset_ids": sorted(self.asset_ids),
+                 "read_ranges": self.read_ranges}
+        if agent is not None:
+            value["agent"] = agent
+        temporary = self.root / ("checkpoint." + uuid.uuid4().hex + ".tmp")
+        temporary.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(self.root / "checkpoint.json")
+
+    @classmethod
+    def restore_checkpoint(cls, uploads: Path, user_id: str, conversation_id: str, task_id: str):
+        if not isinstance(task_id, str) or len(task_id) != 32 or any(c not in "0123456789abcdef" for c in task_id):
+            raise FileAgentError("任務檢查點無效。")
+        root = (uploads / "file_agent" / user_key(user_id) / task_id).resolve()
+        try:
+            value = json.loads((root / "checkpoint.json").read_text(encoding="utf-8"))
+            if value.get("version") != 1 or value.get("user_key") != user_key(user_id) or value.get("conversation_id") != conversation_id or value.get("task_id") != task_id:
+                raise ValueError()
+            runtime = cls.__new__(cls)
+            runtime.user_id, runtime.conversation_id, runtime.task_id = user_id, conversation_id, task_id
+            runtime.root, runtime.inputs, runtime.outputs = root, root / "inputs", root / "outputs"
+            runtime.paths = {key: safe_child(root, root / path) for key, path in value["paths"].items()}
+            if any(not path.is_file() for path in runtime.paths.values()):
+                raise ValueError()
+            runtime.records, runtime.generated, runtime.ocr_text = value["records"], value["generated"], value["ocr_text"]
+            runtime.read_ids, runtime.asset_ids = set(value["read_ids"]), set(value["asset_ids"])
+            runtime.read_ranges = value["read_ranges"]
+            runtime.browser_progress = value.get("agent")
+            runtime.deadline = time.monotonic() + 600
+            runtime.check_quota()
+            return runtime
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise FileAgentError("任務檢查點不完整，已保留原件，請重新選擇該文件。") from error
+
     async def call(self, operation: str, arguments: dict) -> dict:
         """The only model-to-filesystem boundary; no paths accepted from the model."""
         from mcp import ClientSession, StdioServerParameters
@@ -107,7 +147,7 @@ class TaskRuntime:
         env = {key: value for key, value in os.environ.items()
                if key.upper() in {"SYSTEMROOT", "WINDIR", "PATH", "PATHEXT", "COMSPEC"}}
         env.update(TEMP=str(self.root), TMP=str(self.root), PYTHONIOENCODING="utf-8",
-                   PYTHONUTF8="1", OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1", FILE_AGENT_CONTEXT=str(manifest))
+                   PYTHONUTF8="1", FILE_AGENT_CONTEXT=str(manifest))
         parameters = StdioServerParameters(
             command=sys.executable, args=["-m", "services.file_agent.mcp_server"], env=env,
             cwd=str(Path(__file__).resolve().parents[2]),
@@ -176,15 +216,52 @@ class TaskRuntime:
                 path.unlink(missing_ok=True)
         (self.root / "mcp-context.json").unlink(missing_ok=True)
 
+    def prune_untracked_outputs(self):
+        retained = {path.resolve() for path in self.paths.values()}
+        for path in self.outputs.iterdir():
+            if path.is_file() and safe_child(self.root, path) not in retained:
+                path.unlink()
+
+    @classmethod
+    def discard_checkpoint(cls, uploads, owner, task_id):
+        if len(task_id) != 32 or any(char not in "0123456789abcdef" for char in task_id):
+            return
+        owner_root = safe_child(uploads, uploads / "file_agent" / user_key(owner))
+        root = safe_child(owner_root, owner_root / task_id)
+        if not root.is_dir():
+            return
+        try:
+            state = json.loads((root / "task.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if state.get("state") == "complete" or state.get("user_key") != user_key(owner) or state.get("task_id") != task_id:
+            return
+        for name in ("inputs", "outputs"):
+            folder = safe_child(root, root / name)
+            shutil.rmtree(folder, ignore_errors=True)
+        for name in ("checkpoint.json", "mcp-context.json"):
+            (root / name).unlink(missing_ok=True)
+
+
 
 @lru_cache(maxsize=256)
 def _preview_lock(directory):
     return threading.Lock()
 
 
+# One converter fits a 2-core/4-GB host; cached previews never queue behind it.
+_preview_converter_slots = threading.BoundedSemaphore(1)
+
+
 def office_preview(source: Path, directory: Path) -> Path:
+    target = directory / "preview.pdf"
+    if target.is_file() and target.stat().st_mtime_ns >= source.stat().st_mtime_ns:
+        return target
     with _preview_lock(str(directory.resolve())):
-        return _render_office_preview(source, directory)
+        if target.is_file() and target.stat().st_mtime_ns >= source.stat().st_mtime_ns:
+            return target
+        with _preview_converter_slots:
+            return _render_office_preview(source, directory)
 
 
 def _short_windows_path(path: Path) -> str:
@@ -208,7 +285,7 @@ def _render_office_preview(source: Path, directory: Path) -> Path:
         raise FileAgentError("本機缺少 LibreOffice，無法產生 Office 預覽。")
     # Refuse linked/macro-bearing packages before invoking Office's renderer.
     from .skills import FileSkills
-    FileSkills({"preview": source}, directory / "validation").execute("validate_file", {"file_id": "preview"})
+    FileSkills({"preview": source}, directory / "validation")._source("preview")
     # LibreOffice's own nested Windows files still encounter MAX_PATH limits.
     profile = directory / ("p" + uuid.uuid4().hex[:8])
     profile.mkdir()
@@ -230,9 +307,9 @@ def _render_office_preview(source: Path, directory: Path) -> Path:
              "--convert-to", "pdf", "--outdir", _short_windows_path(directory), _short_windows_path(staged_source)]
         process = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), env=env)
+        job = None
         try:
-            # The isolated parser worker already owns the inherited process job
-            # (768 MiB total on Windows); core previews need no pywin32 package.
+            # The isolated parser worker already bounds this descendant.
             process.communicate(timeout=45)
         finally:
             if process.poll() is None:
@@ -244,6 +321,7 @@ def _render_office_preview(source: Path, directory: Path) -> Path:
             raise FileAgentError("Office 預覽超過 50 MB 限制，請下載原檔開啟。")
         import pymupdf as fitz
         with fitz.open(staged_pdf) as pdf:
+            validate_pdf(pdf)
             if not pdf.page_count:
                 raise FileAgentError("Office 預覽沒有有效頁面。")
         staged_pdf.replace(target)

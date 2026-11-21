@@ -9,6 +9,7 @@ import asyncio
 import html
 import ipaddress
 import json
+import logging
 import os
 import re
 import threading
@@ -27,8 +28,11 @@ MAX_FETCH_PAGES = 2
 MAX_PAGE_CONTENT = 8000
 MAX_PROMPT_CHARS = 20000
 MAX_URL_LENGTH = 8192
-REQUEST_TIMEOUT_SECONDS = 7.0
-REQUEST_DEADLINE_SECONDS = 8.0
+CONNECT_TIMEOUT_SECONDS = 15.0
+SEARCH_READ_TIMEOUT_SECONDS = 20.0
+SEARCH_DEADLINE_SECONDS = 25.0
+FETCH_READ_TIMEOUT_SECONDS = 25.0
+FETCH_DEADLINE_SECONDS = 30.0
 MAX_QUEUE_WAIT_SECONDS = 5.0
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
@@ -46,6 +50,21 @@ _SECRET_RE = re.compile(
     re.IGNORECASE,
 )
 _TRACKING_NAMES = {"gclid", "fbclid", "msclkid"}
+_logger = logging.getLogger(__name__)
+_FAILURE_REASONS = {
+    "timeout": "連線或回應逾時，請稍後重試",
+    "network": "無法連接服務，請檢查伺服器網路後重試",
+    "authentication": "服務密鑰驗證失敗，請聯絡管理員檢查設定",
+    "quota": "服務額度不足，請聯絡管理員檢查帳戶額度",
+    "blocked": "服務拒絕存取，請聯絡管理員檢查服務權限或網頁存取限制",
+    "not_found": "未能取得可讀取的網頁，請確認網址或稍後重試",
+    "rate_limited": "服務請求過於頻繁，請稍後重試",
+    "invalid_request": "服務無法處理此次請求，請調整問題或網址後重試",
+    "invalid_response": "服務返回的資料格式無法使用，請稍後重試",
+    "empty_content": "網頁沒有可讀取的正文，請嘗試其他公開網頁",
+    "http_error": "服務暫時異常，請稍後重試",
+    "unexpected": "服務暫時無法使用，請稍後重試",
+}
 
 
 class _RateLimiter:
@@ -78,6 +97,15 @@ _search_limiter = _RateLimiter(5)
 
 class _ServiceFailure(Exception):
     """Controlled error category, never a provider body, URL, or credential."""
+
+    def __init__(self, category: str):
+        self.category = category if category in _FAILURE_REASONS else "unexpected"
+        super().__init__(self.category)
+
+
+def _failure_message(stage: str, category: str) -> str:
+    service = "網頁搜尋" if stage == "search" else "網頁正文讀取"
+    return f"{service}失敗：{_FAILURE_REASONS.get(category, _FAILURE_REASONS['unexpected'])}。"
 
 
 def _text(value, limit: int) -> str:
@@ -182,53 +210,82 @@ def _search_query(question: str) -> str:
 
 def _client() -> httpx.AsyncClient:
     return httpx.AsyncClient(
-        timeout=httpx.Timeout(REQUEST_TIMEOUT_SECONDS, connect=4.0),
+        timeout=httpx.Timeout(SEARCH_READ_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS),
         follow_redirects=False,
     )
 
 
 async def _post_json(client: httpx.AsyncClient, endpoint: str, *, headers: dict,
-                     payload: dict, limiter: _RateLimiter) -> dict:
-    """No implicit POST replay. Only an explicit 429 gets one bounded retry."""
-    for attempt in range(2):
-        await limiter.wait()
-        try:
-            response = await asyncio.wait_for(
-                client.post(endpoint, headers=headers, json=payload),
-                timeout=REQUEST_DEADLINE_SECONDS,
+                     payload: dict, limiter: _RateLimiter, stage: str) -> dict:
+    """One stage budget includes queueing and the sole explicit-429 retry."""
+    read_timeout, deadline = (
+        (SEARCH_READ_TIMEOUT_SECONDS, SEARCH_DEADLINE_SECONDS) if stage == "search" else
+        (FETCH_READ_TIMEOUT_SECONDS, FETCH_DEADLINE_SECONDS)
+    )
+
+    async def request_with_retry():
+        for attempt in range(2):
+            await limiter.wait()
+            response = await client.post(
+                endpoint, headers=headers, json=payload,
+                timeout=httpx.Timeout(read_timeout, connect=CONNECT_TIMEOUT_SECONDS),
             )
-        except (httpx.TimeoutException, asyncio.TimeoutError):
-            raise _ServiceFailure("timeout") from None
-        except httpx.RequestError:
-            raise _ServiceFailure("network") from None
-        if response.status_code == 429 and attempt == 0:
+            if response.status_code == 429 and attempt == 0:
+                try:
+                    retry_after = float(response.headers.get("Retry-After", "0.5"))
+                except ValueError:
+                    retry_after = 0.5
+                await asyncio.sleep(max(0.2, min(retry_after, 1.0)))
+                continue
+            if response.status_code != 200:
+                categories = {400: "invalid_request", 401: "authentication", 402: "quota",
+                              403: "blocked", 404: "not_found", 408: "timeout",
+                              429: "rate_limited", 504: "timeout"}
+                raise _ServiceFailure(categories.get(response.status_code, "http_error"))
+            if len(response.content) > MAX_RESPONSE_BYTES:
+                raise _ServiceFailure("invalid_response")
             try:
-                retry_after = float(response.headers.get("Retry-After", "0.5"))
-            except ValueError:
-                retry_after = 0.5
-            await asyncio.sleep(max(0.2, min(retry_after, 1.0)))
-            continue
-        if response.status_code != 200:
-            categories = {401: "authentication", 402: "quota", 403: "blocked",
-                          404: "not_found", 429: "rate_limited"}
-            raise _ServiceFailure(categories.get(response.status_code, "http_error"))
-        if len(response.content) > MAX_RESPONSE_BYTES:
-            raise _ServiceFailure("invalid_response")
-        try:
-            data = response.json()
-        except (ValueError, UnicodeError):
-            raise _ServiceFailure("invalid_response") from None
-        if not isinstance(data, dict) or data.get("error"):
-            raise _ServiceFailure("invalid_response")
+                data = response.json()
+            except (ValueError, UnicodeError):
+                raise _ServiceFailure("invalid_response") from None
+            if not isinstance(data, dict) or data.get("error"):
+                raise _ServiceFailure("invalid_response")
+            if stage == "search" and not isinstance(data.get("organic", []), list):
+                raise _ServiceFailure("invalid_response")
+            if stage == "fetch" and not _text(data.get("content"), MAX_RESPONSE_BYTES):
+                raise _ServiceFailure("empty_content")
+            return data
+        raise _ServiceFailure("rate_limited")
+
+    started = time.monotonic()
+    category = "unexpected"
+    try:
+        data = await asyncio.wait_for(request_with_retry(), timeout=deadline)
+        category = "success"
         return data
-    raise _ServiceFailure("rate_limited")
+    except (httpx.TimeoutException, asyncio.TimeoutError):
+        category = "timeout"
+        raise _ServiceFailure(category) from None
+    except httpx.RequestError:
+        category = "network"
+        raise _ServiceFailure(category) from None
+    except _ServiceFailure as failure:
+        category = failure.category
+        raise
+    finally:
+        # Do not log provider bodies, exceptions, questions, URLs or credentials.
+        _logger.log(
+            logging.INFO if category == "success" else logging.WARNING,
+            "web_provider stage=%s category=%s elapsed_ms=%d",
+            stage, category, max(0, round((time.monotonic() - started) * 1000)),
+        )
 
 
 async def _fetch_page(client: httpx.AsyncClient, url: str, api_key: str) -> tuple[str, str, bool]:
     data = await _post_json(
         client, DEEPSEEK_FETCH_API_URL,
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        payload={"url": url}, limiter=_fetch_limiter,
+        payload={"url": url}, limiter=_fetch_limiter, stage="fetch",
     )
     raw = _text(data.get("content"), MAX_RESPONSE_BYTES)
     if not raw:
@@ -282,7 +339,8 @@ def _result(status: str, message: str, sources: list[dict] | None = None,
 
 
 async def gather_web_context(question: str, *, serper_key: str | None = None,
-                             deepseek_key: str | None = None) -> dict:
+                             deepseek_key: str | None = None,
+                             progress_callback=None) -> dict:
     """Find up to five Google results with Serper and read at most two pages.
 
     Questions containing HTTP(S) URLs bypass search and only read those URLs.
@@ -290,6 +348,20 @@ async def gather_web_context(question: str, *, serper_key: str | None = None,
     Explicit empty keys disable that provider; otherwise settings.py takes
     precedence, with an environment-variable fallback for deployment.
     """
+    async def _report(payload: dict):
+        if progress_callback is None:
+            return
+        try:
+            outcome = progress_callback(payload)
+            if asyncio.iscoroutine(outcome):
+                await outcome
+        except Exception:
+            pass
+
+    def _public_sources(items: list[dict]) -> list[dict]:
+        fields = ("id", "title", "url", "snippet", "content_status", "date", "truncated")
+        return [{k: item[k] for k in fields if k in item} for item in items]
+
     question = _text(question, 20000)
     if not question:
         return _result("error", "請輸入要搜尋的問題或公開網頁連結。")
@@ -320,14 +392,17 @@ async def gather_web_context(question: str, *, serper_key: str | None = None,
                 return _result("error", "請輸入要搜尋的問題或公開網頁連結。")
             if not serper:
                 return _result("error", "尚未設定 Serper 搜尋密鑰，暫時無法搜尋網頁。")
+            await _report({"stage": "searching", "query": query})
             try:
                 data = await _post_json(
                     client, SERPER_API_URL,
                     headers={"X-API-KEY": serper, "Content-Type": "application/json"},
                     payload={"q": query, "num": MAX_SEARCH_RESULTS}, limiter=_search_limiter,
+                    stage="search",
                 )
-            except _ServiceFailure:
-                return _result("error", "網頁搜尋暫時未能完成，請稍後重試；本次未取得可引用的網頁資料。")
+            except _ServiceFailure as failure:
+                return _result("error", _failure_message("search", failure.category)
+                               + "本次未取得可引用的網頁資料。")
             answer_box = data.get("answerBox")
             if isinstance(answer_box, dict):
                 answer = _text(answer_box.get("answer") or answer_box.get("snippet"), 1000)
@@ -356,10 +431,22 @@ async def gather_web_context(question: str, *, serper_key: str | None = None,
                     break
             if not sources:
                 return _result("no_results", "未找到可用的公開網頁搜尋結果。", answer=answer)
+            await _report({
+                "stage": "searched",
+                "query": query,
+                "sources": _public_sources(sources),
+                "fetch_targets": _public_sources(sources[:MAX_FETCH_PAGES]),
+            })
 
         selected = sources[:MAX_FETCH_PAGES]
         failures = 0
+        failure_categories = []
         if deepseek:
+            await _report({
+                "stage": "fetching",
+                "direct": bool(direct),
+                "sources": _public_sources(selected),
+            })
             results = await asyncio.gather(
                 *(_fetch_page(client, source["url"], deepseek) for source in selected),
                 return_exceptions=True,
@@ -367,6 +454,9 @@ async def gather_web_context(question: str, *, serper_key: str | None = None,
             for source, page in zip(selected, results):
                 if isinstance(page, BaseException):
                     failures += 1
+                    category = page.category if isinstance(page, _ServiceFailure) else "unexpected"
+                    if category not in failure_categories:
+                        failure_categories.append(category)
                     continue
                 title, body, truncated = page
                 if title:
@@ -378,14 +468,15 @@ async def gather_web_context(question: str, *, serper_key: str | None = None,
         else:
             failures = len(selected)
 
+    failure_detail = "".join(_failure_message("fetch", category) for category in failure_categories)
     usable = bool(bodies) or any(source["snippet"] for source in sources)
     if not usable:
         message = ("尚未設定 DeepSeek 密鑰，暫時無法讀取網頁正文。" if not deepseek else
-                   "未能讀取所提供網頁的正文，且沒有可用摘要；請確認網頁公開可訪問或稍後重試。")
+                   "未取得可引用的網頁正文或摘要。" + failure_detail)
         return _result("error", message, sources, answer=answer)
     if failures or rejected:
         message = ("已取得搜尋摘要，但尚未設定 DeepSeek 密鑰，未能讀取正文。" if not deepseek else
-                   "已取得部分網頁資料；部分頁面未能讀取，僅按可用正文或搜尋摘要提供參考。")
+                   "已取得部分網頁資料；僅按可用正文或搜尋摘要提供參考。" + failure_detail)
         return _result("partial", message, sources, bodies, answer)
     message = (f"已讀取 {len(bodies)} 個網頁的正文。" if direct else
                f"已取得網頁搜尋結果，並讀取 {len(bodies)} 個頁面的正文。")

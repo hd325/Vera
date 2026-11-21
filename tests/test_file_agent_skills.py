@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-import fitz
+import pymupdf as fitz
 from docx import Document
 from docx.shared import Pt
 from openpyxl import load_workbook
@@ -163,9 +163,8 @@ class FileSkillsTests(unittest.TestCase):
 
     def test_pdf_pagination_keeps_all_text_and_cjk(self):
         paragraphs = [f"第{i}项放假安排：学校假期内容，来源校历。" for i in range(120)]
-        # Exercise Linux/no-system-CJK-font behavior even on a Windows machine.
-        with patch("services.file_agent.skills._PDF_FONT", None):
-            result = self.create("pdf", {"title": "学校放假日期", "paragraphs": paragraphs})
+        # The PDF engine uses the bundled PyMuPDF CJK font on both platforms.
+        result = self.create("pdf", {"title": "学校放假日期", "paragraphs": paragraphs})
         self.assertGreater(result["validation"]["page_count"], 1)
         read = self.skills.execute("read_file", {"file_id": result["file_id"], "limit": 1})
         self.assertTrue(read["has_more"])

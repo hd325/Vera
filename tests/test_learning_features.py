@@ -246,10 +246,13 @@ class QuizValidationTests(unittest.TestCase):
         long_item = quiz_item(evidence="甲" * 200)
         long_item["answer"] = "甲"
         self.assertEqual(len(validate_payload([long_item], material=long_material)), 1)
-        for length in [19, 201]:
+        for length in [201]:
             with self.subTest(evidence_length=length):
                 with self.assertRaises(QuizValidationError):
                     validate_payload([{**long_item, "evidence": "甲" * length}], material=long_material)
+        expanded = validate_payload([{**long_item, "evidence": "甲" * 19}], material=long_material)
+        self.assertGreaterEqual(len(expanded[0]["evidence"]), 20)
+        self.assertIn(expanded[0]["evidence"], "甲" * 400)
         short_text = "负极发生氧化反应"
         short_material = load_document_material(DOCUMENT_ID, MaterialStore([
             source_chunk("short", short_text), source_chunk("full", offset=100)
@@ -326,11 +329,11 @@ class QuizGenerationTests(unittest.IsolatedAsyncioTestCase):
                 return Response()
         with patch("services.quiz_service.httpx.AsyncClient", OfflineClient):
             result = await generate_quiz(DOCUMENT_ID, question_types=["blank"], count=1,
-                                         api_config={"DEEPSEEK_API_URL": "https://offline.invalid",
-                                                     "DEEPSEEK_API_KEY": "dummy-test-value"},
+                                         api_config={"LLM_API_URL": "https://offline.invalid",
+                                                     "LLM_API_KEY": "dummy-test-value"},
                                          store=MaterialStore([source_chunk("one")]))
         self.assertEqual(len(calls), 1)
-        from config.deepseek import DEEPSEEK_MODEL
+        from config.llm import DEFAULT_CHAT_MODEL as DEEPSEEK_MODEL
         self.assertEqual(calls[0]["json"]["model"], DEEPSEEK_MODEL)
         self.assertEqual(calls[0]["json"]["thinking"], {"type": "disabled"})
         self.assertEqual(calls[0]["json"]["temperature"], .1)
@@ -375,8 +378,8 @@ class QuizGenerationTests(unittest.IsolatedAsyncioTestCase):
                 with patch("services.quiz_service.httpx.AsyncClient", OfflineClient):
                     with self.assertRaises(QuizGenerationError):
                         await generate_quiz(DOCUMENT_ID, question_types=["blank"], count=1,
-                                            api_config={"DEEPSEEK_API_URL": "https://offline.invalid",
-                                                        "DEEPSEEK_API_KEY": "dummy-test-value"},
+                                            api_config={"LLM_API_URL": "https://offline.invalid",
+                                                        "LLM_API_KEY": "dummy-test-value"},
                                             store=MaterialStore([source_chunk("one")]))
                 self.assertEqual(len(calls), 1)
 
@@ -387,8 +390,8 @@ class QuizGenerationTests(unittest.IsolatedAsyncioTestCase):
         with patch("services.quiz_service.httpx.AsyncClient") as client:
             with self.assertRaises(QuizGenerationError) as caught:
                 await generate_quiz(DOCUMENT_ID, question_types=["blank"], count=1,
-                                    api_config={"DEEPSEEK_API_URL": "https://offline.invalid",
-                                                "DEEPSEEK_API_KEY": "dummy-test-value"},
+                                    api_config={"LLM_API_URL": "https://offline.invalid",
+                                                "LLM_API_KEY": "dummy-test-value"},
                                     store=UnavailableStore())
             self.assertNotIn("private-store-fixture-detail", str(caught.exception))
             client.assert_not_called()

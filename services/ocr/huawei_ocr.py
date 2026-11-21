@@ -13,7 +13,6 @@ from config.settings import (
     HUAWEI_AK, HUAWEI_SK, HUAWEI_PROJECT_ID, HUAWEI_OCR_REGION,
     is_huawei_ocr_configured,
 )
-from services.resource_limits import validate_pdf, ParserLimitError
 from utils.image_utils import image_bytes_to_base64, prepare_image_bytes
 
 
@@ -50,7 +49,7 @@ class HuaweiOCR:
     def _get_client(self) -> OcrClient:
         if not is_huawei_ocr_configured():
             raise HuaweiOCRNotConfigured(
-                "華為雲 OCR 未配置：請在本機 .env 填入 HUAWEI_AK / HUAWEI_SK"
+                "華為雲 OCR 未配置：請在 config/settings.py 填入 HUAWEI_AK / HUAWEI_SK"
             )
         if self._client is None:
             cred = (BasicCredentials(HUAWEI_AK, HUAWEI_SK, HUAWEI_PROJECT_ID)
@@ -126,12 +125,14 @@ class HuaweiOCR:
         self, image_bytes: bytes, filename: str = "", *,
         progress_callback: Callable[[dict], None] | None = None,
         retry: bool = True,
+        photo: bool = False,
     ) -> str:
         """識別單張圖片；retry=False 首次失敗或空白結果立即拋錯。"""
         if progress_callback:
             progress_callback({"type": "ocr_started", "total": None})
         try:
-            b64 = image_bytes_to_base64(prepare_image_bytes(image_bytes))
+            prepared = prepare_image_bytes(image_bytes, compact_jpeg=photo)
+            b64 = image_bytes_to_base64(prepared)
         except Exception:
             if not retry:
                 raise OCRRecognitionError("圖片預處理失敗") from None
@@ -144,6 +145,12 @@ class HuaweiOCR:
                 request = RecognizeGeneralTextRequest()
                 request.body = GeneralTextRequestBody(image=b64, detect_direction=True)
                 text = self._join_lines(client.recognize_general_text(request))
+                if not text.strip() and photo and prepared is not image_bytes and len(image_bytes) > 3 * 1024 * 1024:
+                    full_quality = prepare_image_bytes(image_bytes)
+                    if full_quality != prepared:
+                        b64 = image_bytes_to_base64(full_quality)
+                        request.body = GeneralTextRequestBody(image=b64, detect_direction=True)
+                        text = self._join_lines(client.recognize_general_text(request))
             except HuaweiOCRNotConfigured:
                 raise
             except Exception as error:
@@ -156,7 +163,7 @@ class HuaweiOCR:
                     continue
                 return ""
             if not text.strip():
-                if not retry:
+                if not retry and not photo:
                     raise OCRRecognitionError("圖片未識別到文字")
                 return ""
             if progress_callback:
@@ -182,6 +189,7 @@ class HuaweiOCR:
         pages_text: list[str] = []
         completed = 0
         try:
+            from services.resource_limits import validate_pdf
             validate_pdf(doc)
             total = len(doc)
             if progress_callback:
@@ -199,8 +207,6 @@ class HuaweiOCR:
                     if not text or not text.strip():
                         raise OCRRecognitionError("PDF 頁面未識別到文字")
                 except HuaweiOCRNotConfigured:
-                    raise
-                except ParserLimitError:
                     raise
                 except Exception as error:
                     if self._is_fatal(error):

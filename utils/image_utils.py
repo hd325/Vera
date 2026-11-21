@@ -5,11 +5,47 @@
 """
 import base64
 import io
+from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
+try:
+    from pillow_heif import register_heif_opener
+except ImportError:
+    register_heif_opener = None
+if register_heif_opener is not None:
+    register_heif_opener(thumbnails=False)
+
+PHOTO_EXTENSIONS = frozenset({
+    ".jpg", ".jpeg", ".jpe", ".png", ".gif", ".bmp", ".webp",
+    ".tif", ".tiff", ".heic", ".heif", ".avif",
+})
+PHOTO_FORMATS = frozenset({"JPEG", "PNG", "GIF", "BMP", "WEBP", "TIFF", "HEIF", "AVIF"})
+JPEG_EXTENSIONS = frozenset({".jpg", ".jpeg", ".jpe"})
+CONVERTED_PREVIEW_EXTENSIONS = frozenset({".heic", ".heif", ".avif", ".tiff", ".tif"})
 
 
-def prepare_image_bytes(image_bytes: bytes) -> bytes:
+def photo_name(name: str) -> bool:
+    return Path(name or "").suffix.lower() in PHOTO_EXTENSIONS
+
+
+def encode_photo(original, edge: int, quality: int, *, progressive=False) -> bytes:
+    """Create an upright JPEG copy without source metadata or animation."""
+    if original.format == "JPEG":
+        original.draft("RGB", (edge, edge))
+    image = ImageOps.exif_transpose(original)
+    image.thumbnail((edge, edge), Image.Resampling.LANCZOS)
+    if image.mode in {"RGBA", "LA"} or "transparency" in image.info:
+        rgba = image.convert("RGBA")
+        image = Image.new("RGB", rgba.size, "white")
+        image.paste(rgba, mask=rgba.getchannel("A"))
+    else:
+        image = image.convert("RGB")
+    output = io.BytesIO()
+    image.save(output, format="JPEG", quality=quality, progressive=progressive)
+    return output.getvalue()
+
+
+def prepare_image_bytes(image_bytes: bytes, *, compact_jpeg: bool = False) -> bytes:
     """準備符合 general-text 限制的圖片，合規原圖保持不變。
 
     Base64 最多 10 MiB，圖片兩邊均須介於 15 和 30000 像素。
@@ -24,10 +60,15 @@ def prepare_image_bytes(image_bytes: bytes) -> bytes:
     try:
         with Image.open(io.BytesIO(image_bytes)) as original:
             width, height = original.size
+            valid_dimensions = 15 <= width <= 30000 and 15 <= height <= 30000 and width * height <= 160_000_000
+            if compact_jpeg and valid_dimensions and original.format == "JPEG" and len(image_bytes) > 3 * 1024 * 1024:
+                # At OCR resolution preserve every pixel, including small printed characters.
+                with Image.open(io.BytesIO(image_bytes)) as photo:
+                    compact = encode_photo(photo, max(photo.size), 89)
+                if fits_size(compact) and len(compact) <= len(image_bytes) * .75:
+                    return compact
             if (original.format in {"PNG", "JPEG", "BMP", "GIF", "TIFF", "WEBP", "PCX", "ICO", "PSD"}
-                    and 15 <= width <= 30000 and 15 <= height <= 30000
-                    and width * height <= 160_000_000
-                    and fits_size(image_bytes)):
+                    and valid_dimensions and fits_size(image_bytes)):
                 original.verify()
                 return image_bytes
             image = ImageOps.exif_transpose(original).copy()

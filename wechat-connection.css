@@ -1,0 +1,44 @@
+.wechat-connection { overflow-wrap: anywhere; }
+.wechat-connection > .settings-hint { margin: 0; font-size: 13px; line-height: 1.7; }
+.wechat-account { margin: 6px 0 0; color: var(--text-secondary); font-size: 13px; line-height: 1.7; }
+.wechat-account strong { color: var(--text-primary); font-weight: 600; }
+.wechat-content { margin-top: 14px; }
+.wechat-state { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--border-primary); border-radius: 999px; padding: 5px 10px; color: var(--text-secondary); background: var(--bg-secondary); font-size: 12px; }
+.wechat-state::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.wechat-state[data-state="connected"], .wechat-state[data-state="active"] { color: #15803d; border-color: #86cda4; background: #f0fdf4; }
+.wechat-state[data-state="connection_error"], .wechat-state[data-state="revoked"] { color: #9a3412; border-color: #fdba74; background: #fff7ed; }
+.wechat-binding { margin-top: 16px; padding: 18px; border: 1px solid var(--border-primary); border-radius: 12px; background: var(--bg-secondary); }
+.wechat-binding h5 { margin: 0 0 8px; color: var(--text-primary); font-size: 15px; }
+.wechat-phase { margin: 14px 0 8px; color: var(--text-primary); font-size: 13px; font-weight: 600; }
+.wechat-qr { display: flex; justify-content: center; margin: 15px 0 8px; }
+.wechat-qr img { display: block; width: min(216px,100%); height: auto; aspect-ratio: 1; padding: 10px; border: 1px solid #d1d5db; border-radius: 10px; background: #fff; object-fit: contain; }
+.wechat-expiry { text-align: center; font-variant-numeric: tabular-nums; }
+.wechat-error { color: #dc2626; font-size: 13px; line-height: 1.7; }
+.wechat-details { display: grid; gap: 9px; margin: 16px 0; }
+.wechat-detail { display: grid; grid-template-columns: 95px minmax(0,1fr); gap: 12px; align-items: start; font-size: 12px; line-height: 1.7; }
+.wechat-detail dt { color: var(--text-secondary); }
+.wechat-detail dd { margin: 0; color: var(--text-primary); overflow-wrap: anywhere; }
+.wechat-field { display: grid; gap: 7px; margin-top: 16px; }
+.wechat-field select, .wechat-verification input[type="text"] { min-width: 0; width: 100%; border: 1px solid var(--border-primary); border-radius: 8px; padding: 10px 11px; background: var(--bg-primary); color: var(--text-primary); font: inherit; font-size: 13px; }
+.wechat-verification { display: grid; gap: 10px; margin-top: 16px; }
+.wechat-verification > button { justify-self: start; }
+.wechat-tasks { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border-primary); }
+.wechat-tasks h5 { margin: 0 0 7px; color: var(--text-primary); font-size: 14px; }
+.wechat-task { margin-top: 12px; padding: 13px; border: 1px solid var(--border-primary); border-radius: 10px; background: var(--bg-secondary); }
+.wechat-task-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 13px; }
+.wechat-task-heading time { color: var(--text-secondary); font-size: 11px; }
+.wechat-task-stage { margin: 8px 0 0; color: var(--text-primary); font-size: 12px; line-height: 1.7; }
+.wechat-task progress { display: block; width: 100%; height: 7px; margin-top: 9px; accent-color: var(--blue-600,#2563eb); }
+.wechat-verification fieldset { margin: 0; padding: 12px; border: 1px solid var(--border-primary); border-radius: 8px; }
+.wechat-verification legend { padding: 0 5px; color: var(--text-primary); font-size: 13px; }
+.wechat-choice { display: flex; gap: 8px; align-items: center; padding: 7px 0; font-size: 13px; }
+.wechat-field select:focus-visible, .wechat-verification input:focus-visible { outline: 2px solid var(--blue-500); outline-offset: 3px; }
+[data-theme="dark"] .wechat-state[data-state="connected"], [data-theme="dark"] .wechat-state[data-state="active"] { color: #a7f3c0; border-color: #35614a; background: #173726; }
+[data-theme="dark"] .wechat-state[data-state="connection_error"], [data-theme="dark"] .wechat-state[data-state="revoked"] { color: #fed7aa; border-color: #9a5b2a; background: #38251b; }
+[data-theme="dark"] .wechat-error { color: #fca5a5; }
+@media(max-width:650px) {
+  .wechat-binding { padding: 14px; }
+  .wechat-detail { grid-template-columns: 82px minmax(0,1fr); gap: 8px; }
+  .wechat-connection .settings-action { min-height: 38px; padding: 9px 12px; }
+  .wechat-verification input[type="text"], .wechat-field select { font-size: 16px; }
+}

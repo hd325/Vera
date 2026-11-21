@@ -119,7 +119,7 @@ class UploadApiTests(unittest.TestCase):
         self.assertEqual([event["completed"] for event in events if event["type"] == "ocr_progress"], [1, 2])
         self.assertEqual(result["study_period"], "first")
         self.assertEqual(result["notes"], "")
-        self.assertEqual(result["audience"], "")
+        self.assertEqual(result["audience"], "personal")
         self.assertEqual(result["extraction"]["page_count"], 2)
         self.assertFalse(result["possible_duplicate"])
         self.assertNotIn("draft_id", response.text)
@@ -143,15 +143,15 @@ class UploadApiTests(unittest.TestCase):
 
         calendar = "濠江中學2026學年學生校曆\n9月開學、全校師生假期及考試安排".encode("utf-8")
         with patch.object(main, "classify_upload", classify_upload), \
-                patch.object(main, "API_CONFIG", {"DEEPSEEK_API_KEY": "offline-test-key",
-                                                 "DEEPSEEK_API_URL": "https://offline.invalid/classify"}), \
+                patch.object(main, "API_CONFIG", {"LLM_API_KEY": "offline-test-key",
+                                                 "LLM_API_URL": "https://offline.invalid/classify"}), \
                 patch("services.upload_analysis.httpx.AsyncClient", side_effect=lambda **kwargs:
                       original_client(transport=httpx.MockTransport(respond), **kwargs)):
             _, _, result = self.analyze(raw=calendar, filename="2026學年學生校曆(1).pdf",
                                         content_type="application/pdf")
-        self.assertEqual({key: result[key] for key in (*model, "audience")}, {
-            **model, "study_period": "first", "subject": "other", "notes": "", "audience": "school",
-        })
+        self.assertEqual({key: result[key] for key in model if key != "classification_evidence"},
+                         {key:value for key,value in {**model, "study_period": "none", "subject": "other", "notes": "", "audience": "school"}.items() if key != "classification_evidence"})
+        self.assertTrue(result["classification_evidence"]["audience"]["quote"])
         self.assertEqual(len(requests), 1)
         self.assertEqual(self.extraction_calls, [("2026學年學生校曆(1).pdf", False)])
         self.assertTrue(result["extraction_signature"])
@@ -173,7 +173,7 @@ class UploadApiTests(unittest.TestCase):
         _, events, result = self.analyze()
         self.assertTrue(all(result[field] == "" for field in self.suggestions if field != "study_period"))
         self.assertEqual(result["study_period"], "first")
-        self.assertEqual(result["audience"], "")
+        self.assertEqual(result["audience"], "personal")
         self.assertFalse(any(event["type"] in ("error", "failed") for event in events))
         self.assertTrue(result["extraction_signature"])
         self.assertEqual(self.classify.await_count, 1)
@@ -189,7 +189,8 @@ class UploadApiTests(unittest.TestCase):
         response = self.upload(result)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.store.contents[self.store._files[0]["id"]], "")
-        self.index.assert_not_awaited()
+        self.index.assert_awaited_once()
+        self.assertEqual(self.index.await_args.args[1], "")
 
     def test_resource_limit_is_explicit_and_never_signed_as_valid_extraction(self):
         from services.resource_limits import ParserLimitError
@@ -201,10 +202,10 @@ class UploadApiTests(unittest.TestCase):
         self.assertFalse(any(event['type'] == 'result' for event in events))
         self.classify.assert_not_awaited()
 
-    def test_system_period_overrides_document_and_model_period(self):
+    def test_document_period_is_preserved_and_month_is_only_a_default(self):
         self.suggestions["study_period"] = "third"
         _, _, result = self.analyze()
-        self.assertEqual(result["study_period"], "first")
+        self.assertEqual(result["study_period"], "third")
 
     def test_final_manual_values_and_empty_notes_are_saved_without_second_ocr(self):
         _, _, result = self.analyze()
@@ -300,7 +301,7 @@ class UploadPersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_store_rolls_back_when_disk_write_fails(self):
         store = main.DataStore.__new__(main.DataStore)
         store._sessions, store._conversations, store._files, store._file_contents = {}, {}, [], {}
-        store._deleted_document_ids = set()
+        store._deleted_files = {}
         store._lock, store._persist_lock = asyncio.Lock(), asyncio.Lock()
         with patch.object(store, "_write_json", side_effect=OSError("mock disk failure")), patch("main.logging.error"):
             with self.assertRaises(OSError):

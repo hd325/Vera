@@ -12,7 +12,7 @@ from services.accounts import ACCOUNTS_FILE, create_account_record, load_account
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Create a local HouKongIntellect account.")
+    parser = argparse.ArgumentParser(description="Create a local Vera account.")
     parser.add_argument("--account", help="Account identifier; prompted when omitted.")
     parser.add_argument("--role", choices=("student", "teacher"), help="Explicit account role.")
     parser.add_argument("--name", default="", help="Optional display name.")

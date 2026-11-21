@@ -91,6 +91,7 @@ def build_indexed_file_entries(
     known_ids: Iterable[str],
     *,
     can_access: Callable[[Mapping[str, Any]], bool],
+    can_delete: Callable[[Mapping[str, Any]], bool] | None = None,
     inline_records: Iterable[Mapping[str, Any]] | None = None,
     inline_contents: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
@@ -168,12 +169,15 @@ def build_indexed_file_entries(
             "uploaded_at": _text(original.get("uploaded_at")) or _text(metadata.get("uploaded_at")),
             "has_original": has_original,
             "subject": _text(metadata.get("subject")) or _text(original.get("subject")),
+            "subject_custom": _text(original.get("subject_custom", metadata.get("subject_custom"))),
             "material_type": _text(original.get("material_type")) or _text(metadata.get("material_type")),
+            "material_custom": _text(original.get("material_custom", metadata.get("material_custom"))),
             "study_period": _text(original.get("study_period")) or _text(metadata.get("study_period")),
             "notes": _text(original.get("notes")) or _text(metadata.get("notes")),
             "page_count": max(pages, _integer(original.get("page_count"))),
             "extraction_status": "success" if has_indexed_text or extracted_text.strip() else "none",
             "extracted_text": extracted_text,
             "indexed_only": True,
+            "can_delete": bool(can_delete) and all(can_delete(chunk["metadata"]) is True for chunk in chunks),
         })
     return sorted(result, key=lambda entry: (entry["uploaded_at"], entry["name"], entry["id"]), reverse=True)

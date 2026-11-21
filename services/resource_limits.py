@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import io
 import zipfile
+from functools import partial
 
 MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_ZIP_ENTRIES = 100
@@ -15,9 +16,9 @@ MAX_PAGE_PIXELS = 10_000_000
 PROCESSING_SLOT = asyncio.Semaphore(1)
 
 
-async def await_thread_completion(operation):
+async def await_thread_completion(operation, *args, **kwargs):
     """Keep resource admission until a non-killable thread ends, even on recancel."""
-    task = asyncio.get_running_loop().run_in_executor(None, operation)
+    task = asyncio.get_running_loop().run_in_executor(None, partial(operation, *args, **kwargs))
     canceled = False
     while True:
         try:

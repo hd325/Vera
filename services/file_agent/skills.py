@@ -15,6 +15,8 @@ import math
 import re
 import uuid
 import zipfile
+from services.resource_limits import validate_zip, bounded_member, validate_pdf
+from services.resource_limits import validate_zip, bounded_member, validate_pdf
 from pathlib import Path
 from typing import Any
 
@@ -35,8 +37,9 @@ class FileSkillError(ValueError):
     """Safe, user-readable file-operation failure."""
 
 
-_FORMATS = {"docx", "pptx", "xlsx", "pdf"}
+_FORMATS = {"docx", "pptx", "xlsx", "pdf", "md"}
 _MAX_BYTES = 50 * 1024 * 1024
+_MAX_EXPANDED = 150 * 1024 * 1024
 _DANGEROUS_FORMULA = re.compile(r"(?:WEBSERVICE|HYPERLINK|RTD|DDE|CALL|REGISTER|EXEC|IMPORTXML|IMPORTDATA|IMAGE)\s*\(|\[[^\]]+\]|https?://|file://|\\\\|\|", re.I)
 
 _STYLE_FIELDS = "font_size font_name bold color".split()
@@ -62,18 +65,23 @@ _EDIT_FIELDS = {
     },
     "pdf": {"replace_text": "page old new font_size", "add_text": "page text x y right bottom font_size",
             "delete_pages": "pages", "add_image": "page file_id rect"},
+    "md": {"replace_text": "old new", "set_content": "text"},
 }
-# Only prefer fonts with CJK coverage; otherwise use PyMuPDF's bundled china-s.
-_PDF_FONT = next((p for p in (Path("C:/Windows/Fonts/msyh.ttc"),
-                               Path("C:/Windows/Fonts/simsun.ttc")) if p.is_file()), None)
 
 
-def _pdf_font(page, unique=False):
-    if _PDF_FONT:
-        name = "agentedit" + uuid.uuid4().hex[:8] if unique else "agentfont"
-        page.insert_font(fontname=name, fontfile=str(_PDF_FONT))
-        return name, fitz.Font(fontfile=str(_PDF_FONT))
-    return "china-s", fitz.Font(fontname="china-s")
+def _check_pdf_glyphs(page, *, from_sequence=0):
+    if any(glyph == 0 for span in page.get_texttrace() if span["seqno"] >= from_sequence
+           for _, glyph, *_ in span["chars"]):
+        raise FileSkillError("PDF文字含無法顯示的字形，請改用可顯示的字元")
+
+
+def _write_pdf_box(page, rect, text, size, overflow_detail):
+    writer = fitz.TextWriter(page.rect)
+    if writer.fill_textbox(rect, text, font=fitz.Font("cjk"), fontsize=size):
+        raise FileSkillError(overflow_detail)
+    sequence = len(page.get_bboxlog())
+    writer.write_text(page)
+    _check_pdf_glyphs(page, from_sequence=sequence)
 
 
 def _schema(name, description, properties, required):
@@ -89,6 +97,8 @@ TOOL_DEFINITIONS = [
     _schema("edit_file", "保留未改内容另存新版本。operations每项必须op。DOCX:set_paragraph(index,text),replace_text(old,new),set_table_cell(table,row,col,text),add_paragraph(text),add_table(headers,rows),style_paragraph(index,font_size,bold,color)。PPTX:set_shape_text(slide,shape,text),replace_text(old,new),set_table_cell(slide,shape,row,col,text),add_slide(title,body),style_shape(slide,shape,font_size,bold,color)。XLSX:set_cell(sheet,cell,value),set_range(sheet,start,values),style_range(sheet,range,font_size,bold,color,fill,number_format),merge_cells(sheet,range),column_width(sheet,column,width)。PDF:replace_text(page,old,new),add_text(page,text,x,y,font_size),delete_pages(pages)。", {"file_id": {"type": "string"}, "filename": {"type": "string"}, "operations": {"type": "array", "items": {"type": "object"}, "minItems": 1, "maxItems": 200}}, ["file_id", "filename", "operations"]),
     _schema("validate_file", "重新打开并检查真实文件结构、大小、外链和危险公式。", {"file_id": {"type": "string"}}, ["file_id"]),
 ]
+TOOL_DEFINITIONS[2]["function"]["description"] += ' Markdown content={"text":"完整 Markdown 內容"}，UTF-8。'
+TOOL_DEFINITIONS[3]["function"]["description"] += " Markdown: replace_text(old,new) 或 set_content(text)。"
 
 
 def tool_definitions():
@@ -104,6 +114,35 @@ def _text(value):
     if len(result) > 250000 or any(ord(c) < 32 and c not in "\n\r\t" for c in result):
         raise FileSkillError("文字过长或含不支持的控制字符")
     return result
+
+
+_LATEX_COMMAND = re.compile(r"\\[A-Za-z]{2,}")
+_LATEX_CONTEXT = re.compile(r"[${}^_]")
+
+
+def _strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _strings(item)
+
+
+def _reject_latex(value):
+    """Word, PDF and slides never render LaTeX, so it would show up as raw symbols.
+
+    Every writer goes through here, so the check cannot be skipped by choosing a
+    different tool. A Windows path such as C:\\Users has no math delimiter and passes.
+    """
+    for text in _strings(value):
+        if "$$" in text or (_LATEX_COMMAND.search(text) and _LATEX_CONTEXT.search(text)):
+            raise FileSkillError(
+                "內容含 LaTeX 公式標記（如 \\dfrac、$…$），Word/PDF 不會渲染它們，會變成亂碼。"
+                "請把所有公式改寫成 Unicode 或純文字（如 x²、√3、(a+b)/2、sin α、log₂ x、分數寫成 1/2），"
+                "去掉反斜線命令和美元符號後重新提交。")
 
 
 def _index(value, length, label="索引"):
@@ -272,7 +311,7 @@ class FileSkills:
 
     def _target(self, filename, format):
         if format not in _FORMATS:
-            raise FileSkillError("仅支持PDF、DOCX、PPTX、XLSX输出")
+            raise FileSkillError("僅支援 PDF、DOCX、PPTX、XLSX、Markdown 輸出")
         name = _text(filename).strip()
         if not name or len(name) > 160 or re.search(r'[<>:"/\\|?*\x00-\x1f]', name) or name in {".", ".."} or name.endswith((".", " ")):
             raise FileSkillError("输出名称必须为普通文件名，不能包含路径")
@@ -322,7 +361,7 @@ class FileSkills:
             from PIL import Image
             with Image.open(path) as image:
                 info.update(width=image.width, height=image.height, needs_ocr=True)
-        elif ext not in {"txt", "md", "csv", "json"}:
+        elif ext not in {"txt", "md", "markdown", "csv", "json"}:
             raise FileSkillError("暂不支持此文件格式")
         return info
 
@@ -388,7 +427,7 @@ class FileSkills:
                 for index, page in enumerate(pdf):
                     units.append({"type": "page", "index": index, "text": page.get_text("text"), "width": page.rect.width, "height": page.rect.height,
                                   "needs_ocr": not bool(page.get_text("text").strip())})
-        elif ext in {"txt", "md", "csv", "json"}:
+        elif ext in {"txt", "md", "markdown", "csv", "json"}:
             unit = "line"
             try:
                 text = path.read_text(encoding="utf-8-sig")
@@ -411,7 +450,7 @@ class FileSkills:
                   "next_start": start + len(selected) if more else None, "unit": unit}
         result = {"file_id": file_id, "format": ext, "items": selected, "content": selected,
                   "pagination": paging, "has_more": more, "next_start": paging["next_start"], "total": total, "truncated": False}
-        if ext in {"txt", "md", "csv", "json"} and start == 0 and not more:
+        if ext in {"txt", "md", "markdown", "csv", "json"} and start == 0 and not more:
             # Only trusted local in-memory streams; no URL or plugin dispatch is enabled.
             from markitdown import MarkItDown
             result["markdown"] = MarkItDown(enable_plugins=False).convert_stream(
@@ -424,6 +463,8 @@ class FileSkills:
         path, filename = self._target(filename, format)
         if not isinstance(content, dict) or len(json.dumps(content, ensure_ascii=False)) > 2000000:
             raise FileSkillError("文件内容须为有效且大小受限的JSON对象")
+        if format != "xlsx":
+            _reject_latex(content)
         try:
             if format == "docx":
                 doc = Document()
@@ -498,6 +539,11 @@ class FileSkills:
                     wb.save(path)
                 finally:
                     wb.close()
+            elif format == "md":
+                markdown = _text(content["text"])
+                if not markdown.strip():
+                    raise FileSkillError("Markdown 內容不能為空")
+                path.write_text(markdown, encoding="utf-8", newline="\n")
             else:
                 self._create_pdf(path, content)
             return self._register(path, filename, "已创建并重新打开检查文件")
@@ -637,7 +683,7 @@ class FileSkills:
             return
         if width <= 0 or height <= 0:
             raise FileSkillError("幻灯片文字区域无可用空间")
-        font = fitz.Font(fontfile=str(_PDF_FONT)) if _PDF_FONT else fitz.Font(fontname="china-s")
+        font = fitz.Font("cjk")
         needed = 0.0
         for p in frame.paragraphs:
             runs = list(p.runs)
@@ -666,16 +712,23 @@ class FileSkills:
 
     def _create_pdf(self, path, content):
         pdf = fitz.open()
-        font = fitz.Font(fontfile=str(_PDF_FONT)) if _PDF_FONT else fitz.Font(fontname="china-s")
-        fontname = "agentfont" if _PDF_FONT else "china-s"
+        font = fitz.Font("cjk")
         page = None
+        writer = None
         y = 0.0
+
+        def flush():
+            if writer is not None and writer.last_point:
+                writer.write_text(page, color=(.1, .16, .24))
+                _check_pdf_glyphs(page)
+
         def new_page():
-            nonlocal page, y
+            nonlocal page, writer, y
             if len(pdf) >= 100:
                 raise FileSkillError("PDF超过100页限制")
+            flush()
             page = pdf.new_page(width=595, height=842)
-            _pdf_font(page)
+            writer = fitz.TextWriter(page.rect)
             y = 50.0
         def wrap(text, width, size):
             lines = []
@@ -694,7 +747,8 @@ class FileSkills:
             for line in wrap(text, 495, size):
                 if y + size * 1.6 > 790:
                     new_page()
-                page.insert_text((50, y + size), line, fontname=fontname, fontsize=size, color=(.1, .16, .24))
+                if line:
+                    writer.append((50, y + size), line, font=font, fontsize=size)
                 y += size * 1.6
             y += 8
         def table(spec):
@@ -717,7 +771,8 @@ class FileSkills:
                     rect = fitz.Rect(50 + ci * colw, y, 50 + (ci + 1) * colw, y + height)
                     page.draw_rect(rect, color=(.65, .7, .75), fill=(.88, .93, .98) if ri == 0 and spec.get("headers") else None, width=.5)
                     for li, line in enumerate(cell_lines):
-                        page.insert_text((rect.x0 + 6, rect.y0 + 16 + li * 15), line, fontname=fontname, fontsize=10)
+                        if line:
+                            writer.append((rect.x0 + 6, rect.y0 + 16 + li * 15), line, font=font, fontsize=10)
                 y += height
             y += 12
         try:
@@ -746,10 +801,14 @@ class FileSkills:
                         new_page()
                     page.insert_image(fitz.Rect(50, y, 50 + width, y + height), filename=str(src))
                     y += height + 12
+            flush()
             if all(not p.get_text().strip() and not p.get_images() for p in pdf):
                 raise FileSkillError("PDF内容不能为空")
             pdf.subset_fonts()
             pdf.save(path, garbage=4, deflate=True)
+            with fitz.open(path) as reopened:
+                for saved_page in reopened:
+                    _check_pdf_glyphs(saved_page)
         finally:
             pdf.close()
 
@@ -759,6 +818,8 @@ class FileSkills:
         path, filename = self._target(filename, ext)
         if not isinstance(operations, list) or not 1 <= len(operations) <= 200:
             raise FileSkillError("须提供1至200项具体修改操作")
+        if ext != "xlsx":
+            _reject_latex(operations)
         for operation in operations:
             kind = operation.get("op") if isinstance(operation, dict) else None
             if kind not in _EDIT_FIELDS.get(ext, {}):
@@ -907,7 +968,6 @@ class FileSkills:
                             pdf.delete_pages(sorted(set(pages)))
                             continue
                         page = pdf[_index(op["page"], len(pdf), "页")]
-                        fontname, _font = _pdf_font(page, unique=True)
                         if kind == "replace_text":
                             old, new = _text(op["old"]), _text(op["new"])
                             if not old:
@@ -919,20 +979,19 @@ class FileSkills:
                             for rect in rects:
                                 page.add_redact_annot(rect, fill=(1, 1, 1))
                             page.apply_redactions(images=0, graphics=0)
-                            # Redaction discards unused resources; bind the new font afterwards.
-                            fontname, _font = _pdf_font(page, unique=True)
                             for rect in rects:
                                 target = fitz.Rect(rect.x0, rect.y0 - 2, rect.x1, rect.y1 + 3)
-                                if page.insert_textbox(target, new, fontname=fontname, fontsize=size) < 0:
-                                    raise FileSkillError("替换文字放不下原PDF区域，请缩短文字或指定较小字号")
+                                if new:
+                                    _write_pdf_box(page, target, new, size, "替换文字放不下原PDF区域，请缩短文字或指定较小字号")
                         elif kind == "add_text":
                             size = float(op.get("font_size", 11))
                             x, y = float(op.get("x", 50)), float(op.get("y", 50))
                             if not 6 <= size <= 72 or not page.rect.contains(fitz.Point(x, y)):
                                 raise FileSkillError("PDF文字位置或字号无效")
                             target = fitz.Rect(x, y, float(op.get("right", page.rect.width - 35)), float(op.get("bottom", page.rect.height - 35)))
-                            if not page.rect.contains(target) or page.insert_textbox(target, _text(op["text"]), fontname=fontname, fontsize=size) < 0:
+                            if not page.rect.contains(target) or target.is_empty:
                                 raise FileSkillError("新增PDF文字超出指定区域")
+                            _write_pdf_box(page, target, _text(op["text"]), size, "新增PDF文字超出指定区域")
                         elif kind == "add_image":
                             image = self._source(op["file_id"])
                             rect = fitz.Rect(op["rect"])
@@ -943,6 +1002,18 @@ class FileSkills:
                             raise FileSkillError("PDF修改操作不支持")
                     pdf.subset_fonts()
                     pdf.save(path, garbage=4, deflate=True)
+            elif ext == "md":
+                from services.fulltext import _decode
+                markdown = _decode(src.read_bytes())
+                for op in operations:
+                    if op["op"] == "set_content":
+                        markdown = _text(op["text"])
+                    else:
+                        old, new = _text(op["old"]), _text(op["new"])
+                        if not old or old not in markdown:
+                            raise FileSkillError("Markdown 中找不到指定原文")
+                        markdown = markdown.replace(old, new)
+                path.write_text(markdown, encoding="utf-8", newline="\n")
             else:
                 raise FileSkillError("此文件格式不支持直接编辑")
             return self._register(path, filename, f"已完成{len(operations)}项修改并重新打开检查")
@@ -1044,7 +1115,13 @@ class FileSkills:
         ext = path.suffix.lower()[1:]
         if path.stat().st_size == 0:
             raise FileSkillError("输出文件为空")
-        if ext == "xlsx":
+        if ext == "md":
+            from services.fulltext import _decode
+            markdown = _decode(path.read_bytes())
+            if not markdown.strip():
+                raise FileSkillError("Markdown 內容不能為空")
+            info["line_count"] = len(markdown.splitlines())
+        elif ext == "xlsx":
             wb = load_workbook(path, data_only=False, read_only=True, keep_links=False)
             try:
                 for ws in wb:

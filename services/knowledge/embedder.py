@@ -8,7 +8,7 @@
                * 复用既有 TENCENT_SECRET_ID / TENCENT_SECRET_KEY（与 OCR 同一套凭证）
                * 无需下载模型权重，线上调用，质量高、零本地依赖
 2. local    —— sentence-transformers 本地模型（shibing624/text2vec-base-chinese，768 维）
-               * 读取部署者预先下载的本机权重，不在运行时下载
+               * 只读部署者预先下载的本机权重，不在运行期下载
                * 需另装 requirements-local.txt 中的可选依赖
 3. tfidf    —— numpy 哈希词袋兜底嵌入（固定维度，零网络/零模型）
                * 核心安装即可使用，不需要外部密钥或模型下载
@@ -18,10 +18,12 @@
 默认使用 tfidf 后端；通过环境变量
 EMBEDDING_BACKEND 可强制指定后端（auto | tencent | local | tfidf）。
 """
+import hashlib
 import json
 import logging
 import math
 import os
+import threading
 import re
 import time
 from collections import Counter
@@ -36,6 +38,8 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 
 # ----------------------------------------------------------------------
@@ -143,21 +147,27 @@ class LocalEmbedder(BaseEmbedder):
     dim = 768
     _MODEL = "shibing624/text2vec-base-chinese"
 
-    def __init__(self, model_name: str = _MODEL):
+    def __init__(self, model_name: str | None = None):
+        if model_name is None:
+            from config.settings import LOCAL_EMBEDDING_MODEL
+            model_name = LOCAL_EMBEDDING_MODEL
         # 香港及海外网络默认使用官方源；仍可通过 HF_ENDPOINT 手动切换镜像。
         os.environ.setdefault("HF_ENDPOINT", "https://huggingface.co")
         from sentence_transformers import SentenceTransformer
 
         # 模型已由部署步骤预下载；运行期禁止联网探测，避免网络波动产生警告。
         self._model = SentenceTransformer(model_name, local_files_only=True)
+        self.model_identity = model_name
         self.dim = self._model.get_embedding_dimension()
+        self._inference_lock = threading.Lock()
 
     def embed(self, texts: List[str]) -> List[List[float]]:
         if not texts:
             return []
-        vecs = self._model.encode(
-            texts, normalize_embeddings=True, show_progress_bar=False
-        )
+        with self._inference_lock:
+            vecs = self._model.encode(
+                texts, normalize_embeddings=True, show_progress_bar=False
+            )
         return vecs.tolist()
 
 
@@ -171,7 +181,9 @@ class TfidfEmbedder(BaseEmbedder):
         self.dim = dim
 
     def _tokens(self, text: str):
-        text = (text or "").lower()
+        import zhconv
+
+        text = zhconv.convert(str(text or ""), "zh-cn").lower()
         tokens = []
         chars = [c for c in text if "\u4e00" <= c <= "\u9fa5"]
         for i, c in enumerate(chars):
@@ -210,26 +222,44 @@ class TfidfEmbedder(BaseEmbedder):
 # 工厂：自动选择/缓存后端
 # ----------------------------------------------------------------------
 _EMBEDDER: "BaseEmbedder | None" = None
+_EMBEDDER_LOCK = threading.RLock()
+_LOCAL_EMBEDDER = None
+_LOCAL_EMBEDDER_LOCK = threading.Lock()
+
+
+def get_local_embedder() -> LocalEmbedder:
+    """Share the same local model between full-text and vector search."""
+    global _LOCAL_EMBEDDER
+    with _LOCAL_EMBEDDER_LOCK:
+        if _LOCAL_EMBEDDER is None:
+            _LOCAL_EMBEDDER = LocalEmbedder()
+        return _LOCAL_EMBEDDER
 
 
 def _build(backend: str) -> BaseEmbedder:
     if backend == "tencent":
         return TencentEmbedder()
     if backend == "local":
-        from config.settings import LOCAL_EMBEDDING_MODEL
-        return LocalEmbedder(model_name=LOCAL_EMBEDDING_MODEL)
+        return get_local_embedder()
     if backend == "tfidf":
         return TfidfEmbedder()
     raise ValueError(f"未知嵌入后端: {backend}")
 
 
 def get_embedder() -> BaseEmbedder:
-    """返回（并缓存）当前激活的嵌入器；默认本地，失败时降级 TF-IDF。"""
+    """Share one initialized backend; the core default is offline TF-IDF."""
     global _EMBEDDER
     if _EMBEDDER is not None:
         return _EMBEDDER
+    with _EMBEDDER_LOCK:
+        if _EMBEDDER is None:
+            _EMBEDDER = _initialize_embedder()
+        return _EMBEDDER
 
-    backend = os.environ.get("EMBEDDING_BACKEND", "tfidf").lower()
+
+def _initialize_embedder() -> BaseEmbedder:
+    from config.settings import EMBEDDING_BACKEND
+    backend = os.environ.get("EMBEDDING_BACKEND", EMBEDDING_BACKEND).lower()
     if backend == "auto":
         from config.settings import is_tencent_ocr_configured
 
@@ -248,20 +278,37 @@ def get_embedder() -> BaseEmbedder:
             e = _build(cand)
             # 探针：真实调用一次，确认可用
             e.embed(["探针_health_check"])
-            _EMBEDDER = e
             logger.info(f"✅ 激活嵌入后端: {e.name} (dim={e.dim})")
-            return _EMBEDDER
+            return e
         except Exception as ex:  # noqa: BLE001
             last_err = ex
-            logger.warning(f"⚠️ 嵌入后端 {cand} 不可用: {ex}")
+            logger.warning("嵌入后端 %s 不可用（%s），尝试下一后端", cand, type(ex).__name__)
 
     # 极端兜底
-    _EMBEDDER = TfidfEmbedder()
-    logger.warning(f"⚠️ 所有首选后端均不可用（末因: {last_err}），回退 TF-IDF 兜底")
-    return _EMBEDDER
+    logger.warning("首选嵌入后端不可用（%s），回退 TF-IDF", type(last_err).__name__)
+    return TfidfEmbedder()
 
 
 def reset_embedder() -> None:
     """测试/配置变更后清除缓存，下次调用重新解析后端。"""
-    global _EMBEDDER
-    _EMBEDDER = None
+    global _EMBEDDER, _LOCAL_EMBEDDER
+    with _EMBEDDER_LOCK, _LOCAL_EMBEDDER_LOCK:
+        _EMBEDDER = None
+        _LOCAL_EMBEDDER = None
+
+
+def embedding_fingerprint(embedder) -> str:
+    """Bind persisted vectors to backend, dimensions, tokenizer and local model."""
+    identity = {"format": "vera-embedding-v1", "name": embedder.name, "dim": int(embedder.dim)}
+    if embedder.name == "local":
+        from config.settings import LOCAL_EMBEDDING_MODEL
+        identity["model"] = getattr(embedder, "model_identity", LOCAL_EMBEDDING_MODEL)
+    elif embedder.name == "tfidf":
+        identity["tokenizer"] = "zhconv-char-bigram-word-v2"
+    elif embedder.name == "tencent":
+        identity["model"] = "hunyuan-embedding"
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def embedding_collection_name(embedder) -> str:
+    return f"hk_knowledge_{embedder.name}_{int(embedder.dim)}_{embedding_fingerprint(embedder)}"
