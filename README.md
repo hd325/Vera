@@ -1,8 +1,16 @@
-# HouKongIntellect · 濠江小智
+# Vera · 知行小智
+
+**Vera 新版程式碼和新版 README 已上傳：[查看新版](https://github.com/hd325/Vera/tree/codex/vera-public-release-20261120) · [下載新版 ZIP](https://github.com/hd325/Vera/archive/refs/heads/codex/vera-public-release-20261120.zip) · [更新進度 PR #1](https://github.com/hd325/Vera/pull/1)。**
+
+新版目前是公開預覽，已檢查敏感資訊和空密鑰啟動；完整兼容測試與最新前端整合仍待完成，因此尚未合併到預設 `main` 分支。需要查看新的 Vera 功能及配置，請使用上方新版入口。
+
+## main 分支的既有穩定版本
+
+下方保留原 HouKongIntellect 版本的安裝說明。倉庫已統一改名 Vera，原網址會轉向本倉庫；原版本和新版預覽的模型、依賴及配置有所不同，請使用各自分支中的 README。
 
 校園學習助手：對話問答、帶來源的資料檢索、教師審核、化學教師模式，以及可選裝的本機文件編輯工具。
 
-[下載 ZIP](https://github.com/hd325/HouKongIntellect/archive/refs/heads/main.zip) · [安全說明](SECURITY.md) · [第三方授權](THIRD_PARTY_NOTICES.md)
+[下載 ZIP](https://github.com/hd325/Vera/archive/refs/heads/main.zip) · [安全說明](SECURITY.md) · [第三方授權](THIRD_PARTY_NOTICES.md)
 
 ## 功能
 
@@ -27,7 +35,7 @@
 下載 ZIP 並解壓，或使用 Git：
 
 ~~~sh
-git clone https://github.com/hd325/HouKongIntellect.git
+git clone https://github.com/hd325/Vera.git
 cd HouKongIntellect
 ~~~
 
