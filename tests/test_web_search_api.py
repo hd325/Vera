@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 import tests  # Establish synthetic-only storage before application imports.
 import main
 from tests.account_fixtures import fixture_accounts
+from services.turn_planner import default_plan
 
 
 class WebSearchApiFixture(unittest.TestCase):
@@ -30,6 +31,7 @@ class WebSearchApiFixture(unittest.TestCase):
         self.addCleanup(_accounts.stop)
         self.temp = tempfile.TemporaryDirectory(prefix="hk_web_api_")
         self.root = Path(self.temp.name)
+        self.plan = {**default_plan(), "action": "answer", "knowledge_scope": "public", "planned": True}
         self.prompts = []
         self.answer = "網頁支持的測試回答[W1]。"
         self.fail_after_content = False
@@ -72,15 +74,15 @@ class WebSearchApiFixture(unittest.TestCase):
         self.patches = [
             patch.object(main, "CONVERSATIONS_FILE", str(self.root / "conversations.json")),
             patch.object(main, "SESSIONS_FILE", str(self.root / "sessions.json")),
-            patch.object(main, "stream_deepseek", self.model_stream),
+            patch.object(main, "stream_llm", self.model_stream),
             patch.object(main, "gather_web_context", self.gather),
             patch.object(main, "web_search_with_sources", self.search),
             patch.object(main, "search_relevant_files", self.local_files),
             patch.object(main, "get_user_profile", Mock(return_value={"name": "PRIVATE_PROFILE_NAME"})),
             patch.object(main, "prepare_skill", Mock(return_value=("", {"skill_id": "none", "sources": []}))),
-            patch.object(main, "retrieval_permission_filter", AsyncMock(return_value={
-                "document_id": {"$in": ["doc-fixture"]},
-            })),
+            patch.object(main, "plan_turn", AsyncMock(side_effect=lambda *a, **k: dict(self.plan))),
+            patch.object(main, "_semantic_file_evidence", AsyncMock(side_effect=self.evidence)),
+            patch.object(main, "DEEPSEEK_API_KEY", "offline-fixture-key"),
             patch.object(main, "_append_rag_metrics", Mock()),
             patch.dict(main.API_CONFIG, {"DEEPSEEK_API_KEY": "offline-fixture-key"}),
             patch.dict("sys.modules", {"services.retrieval.retriever": SimpleNamespace(
@@ -124,13 +126,17 @@ class WebSearchApiFixture(unittest.TestCase):
             "owner": "fixture-owner", "review_status": "published",
         }]
 
-    async def model_stream(self, prompt, question, think=False):
+    async def model_stream(self, prompt, question, think=False, model=None, *, images=()):
         self.prompts.append({"prompt": prompt, "question": question, "think": think})
         if think:
             yield 'data: {"type":"reasoning","text":"fixture reasoning"}\n\n'
         yield "data: " + json.dumps({"type": "content", "text": self.answer}, ensure_ascii=False) + "\n\n"
         if self.fail_after_content:
             raise RuntimeError("fixture model interruption")
+
+    async def evidence(self, *args, **kwargs):
+        hits = self.retrieve()
+        return hits, {"status": "success" if hits else "no_relevant_context", "message": "offline fixture"}
 
     def ask(self, route, **changes):
         response = self.client.post(route, headers=self.headers, json={
@@ -171,12 +177,14 @@ class WebSearchApiTests(WebSearchApiFixture):
             with self.subTest(route=route):
                 self.reset_conversation()
                 self.gather.reset_mock()
-                self.ask(route, question=question, file_references="PRIVATE_FILE_REFERENCE", think=True)
-                self.gather.assert_awaited_once_with(question, deepseek_key="offline-fixture-key")
+                self.ask(route, question=question, file_references="fixture.txt", think=True)
+                self.assertEqual(self.gather.await_args.args, (question,))
+                self.assertEqual(self.gather.await_args.kwargs["deepseek_key"], "offline-fixture-key")
+                self.assertTrue(callable(self.gather.await_args.kwargs["progress_callback"]))
                 self.assertEqual(self.prompts[-1]["question"], question)
                 self.assertTrue(self.prompts[-1]["think"])
                 self.assertIn("PRIVATE_HISTORY_MARKER", self.prompts[-1]["prompt"])
-                self.assertIn("PRIVATE_FILE_REFERENCE", self.prompts[-1]["prompt"])
+                self.assertIn("fixture.txt", self.prompts[-1]["prompt"])
 
     def test_progress_sources_done_are_ordered_and_exclude_raw_bodies(self):
         for route in self.routes:
@@ -226,6 +234,7 @@ class WebSearchApiTests(WebSearchApiFixture):
         self.assertIn("[W1]", saved["content"])
 
     def test_ask_keeps_explicit_local_file_content_with_web_evidence(self):
+        self.answer = "本地文件內容[1]，公開網頁內容[W1]。"
         self.ask("/api/ask", file_references="fixture.txt")
         prompt = self.prompts[-1]["prompt"]
         self.assertIn("LOCAL_FILE_BODY", prompt)
@@ -273,7 +282,7 @@ class WebSearchApiTests(WebSearchApiFixture):
         self.assertEqual(events[-1]["web_sources"][0]["content_status"], "unavailable")
         prompt = self.prompts[-1]["prompt"]
         self.assertIn("本次未取得可引用的網頁內容", prompt)
-        self.assertIn("請明確告知用戶目前無法依據文件庫回答", prompt)
+        self.assertIn("請明確告知目前無法依據文件庫回答", prompt)
         self.assertNotIn("本次可依據下方實際取得的網頁證據作答", prompt)
         self.assertNotIn("<external_web_evidence>", prompt)
         self.assertNotIn("網頁引用僅可使用本次提供的 [W1]", prompt)
@@ -326,7 +335,7 @@ class WebSearchApiTests(WebSearchApiFixture):
 
     def test_system_question_with_search_uses_web_provider(self):
         self.ask("/api/ask", question="你是誰？", search=True)
-        self.gather.assert_awaited_once_with("你是誰？", deepseek_key="offline-fixture-key")
+        self.assertEqual(self.gather.await_args.args, ("你是誰？",))
         self.assertEqual(len(self.prompts), 1)
 
     def test_independent_search_awaits_provider_and_returns_structured_status(self):

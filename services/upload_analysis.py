@@ -135,12 +135,18 @@ def validate_classification(raw_content: str, *, normalize_model_text: bool = Fa
             raise UploadAnalysisError("Invalid analysis category", reason="invalid_category")
     for category, custom in (("subject", "subject_custom"), ("material_type", "material_custom")):
         if result[category] != "other":
+            if result[custom]:
+                raise UploadAnalysisError("Invalid analysis result", reason="invalid_response")
             result[custom] = ""
+    if result["material_type"] == "other" and not result["material_custom"]:
+        raise UploadAnalysisError("Missing custom material type", reason="invalid_custom_material")
     if normalize_model_text:
         for field, limit in (("notes", MAX_NOTES_CHARS), ("material_custom", MAX_CUSTOM_CHARS),
                              ("subject_custom", MAX_CUSTOM_CHARS)):
             if len(result[field]) > limit:
                 result[field] = ""
+                if field == "material_custom":
+                    result["material_type"] = ""
     if (len(result["notes"]) > MAX_NOTES_CHARS or len(result["material_custom"]) > MAX_CUSTOM_CHARS
             or len(result["subject_custom"]) > MAX_CUSTOM_CHARS):
         raise UploadAnalysisError("Analysis text is too long", reason="text_too_long")

@@ -46,3 +46,10 @@ python tests/review_browser_harness.py
 6. 重啟應用，確認本機帳號、對話、已發布資料與待審記錄能恢復。
 
 原頁預覽需要對應的上傳原件。僅有提取文字時可提供文字依據，但無法還原 PDF 頁面圖像。
+
+## 全離線前端回歸
+
+另裝 Node.js 與 Playwright 後執行 `node tests/verify_public_frontend.cjs .`。
+Windows 使用已安裝的 Edge，其他系統使用 Playwright Chromium（先執行 `npx playwright install chromium`）。
+此工具載入完整正式頁面，攔截所有網路請求並使用合成回應；檢查內容注入、來源重驗證、會話切換、PDF、設定及手機版。
+結果和截圖存於系統臨時目錄，不會寫入正式資料。

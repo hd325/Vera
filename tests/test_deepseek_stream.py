@@ -10,7 +10,8 @@ import httpx
 import tests  # Establish synthetic-only storage before application imports.
 import main
 from tests.account_fixtures import fixture_accounts
-from config.deepseek import DEEPSEEK_MODEL, DEEPSEEK_MODEL_VERSION, DEEPSEEK_MODEL_VERIFIED_ON
+from config.llm import DEFAULT_CHAT_MODEL as DEEPSEEK_MODEL, DEEPSEEK_V41_FLASH, MAAS_PROVIDER, MAAS_MODELS_VERIFIED_ON as DEEPSEEK_MODEL_VERIFIED_ON
+DEEPSEEK_MODEL_VERSION = DEEPSEEK_V41_FLASH.name
 
 
 def content_line(text: str, ending: str = "\n\n") -> bytes:
@@ -61,18 +62,18 @@ class DeepseekStreamTests(unittest.IsolatedAsyncioTestCase):
         clients = [ByteClient(response, self.requests) for response in responses]
         with (
             patch("main.httpx.AsyncClient", side_effect=clients) as factory,
-            patch.dict(main.API_CONFIG, {"DEEPSEEK_API_KEY": "offline-test-key"}),
+            patch.dict(main.API_CONFIG, {"LLM_API_KEY": "offline-test-key"}),
             patch.object(main.logger, "info"),
             patch("main.asyncio.sleep", new_callable=AsyncMock) as sleep,
         ):
-            output = [event async for event in main.stream_deepseek("test prompt", "test question", think=think)]
+            output = [event async for event in main.stream_llm("test prompt", "test question", think=think)]
         events = [json.loads(event.removeprefix("data: ").strip()) for event in output]
         return events, factory.call_count, sleep.await_count
 
     async def test_regular_chat_explicitly_disables_provider_default_thinking(self):
         await self.collect([ByteResponse([content_line("答案")])])
         request = self.requests[0]
-        self.assertEqual(request["model"], "deepseek-flash")
+        self.assertEqual(request["model"], "deepseek-v4.1-flash-1017")
         self.assertEqual(request["thinking"], {"type": "disabled"})
         self.assertEqual(request["temperature"], .1)
         self.assertNotIn("reasoning_effort", request)
@@ -80,7 +81,7 @@ class DeepseekStreamTests(unittest.IsolatedAsyncioTestCase):
     async def test_thinking_uses_native_parameters_and_preserves_original_question(self):
         await self.collect([ByteResponse([content_line("答案")])], think=True)
         request = self.requests[0]
-        self.assertEqual(request["model"], "deepseek-flash")
+        self.assertEqual(request["model"], "deepseek-v4.1-flash-1017")
         self.assertEqual(request["thinking"], {"type": "enabled"})
         self.assertEqual(request["reasoning_effort"], "high")
         self.assertNotIn("temperature", request)
@@ -98,12 +99,12 @@ class DeepseekStreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("".join(event["text"] for event in events), "最終答案")
 
     async def test_upstream_model_metadata_is_reported_once_without_claiming_revision(self):
-        data = {"model": "deepseek-flash", "choices": [{"delta": {"content": "答案"}}]}
+        data = {"model": "deepseek-v4.1-flash-1017", "choices": [{"delta": {"content": "答案"}}]}
         wire = ("data: " + json.dumps(data) + "\n\n").encode()
         events, _, _ = await self.collect([ByteResponse([wire, wire])])
         metadata = [event for event in events if event["type"] == "model_info"]
         self.assertEqual(metadata, [{"type": "model_info", "requested_model": DEEPSEEK_MODEL,
-                                    "returned_model": "deepseek-flash", "documented_version": DEEPSEEK_MODEL_VERSION,
+                                    "returned_model": "deepseek-v4.1-flash-1017", "provider": MAAS_PROVIDER, "model_name": DEEPSEEK_MODEL_VERSION,
                                     "verified_on": DEEPSEEK_MODEL_VERIFIED_ON}])
 
     async def test_reasoning_only_eof_closes_display_block_and_reports_missing_answer(self):
@@ -166,10 +167,9 @@ class PromptModelTests(unittest.TestCase):
     def test_model_identity_matches_config_for_both_direct_and_generated_answers(self):
         for question in ("你是誰？", "你是什麼模型？", "你用的是什么模型？"):
             answer = main.get_direct_system_response(question)
-            self.assertIn(DEEPSEEK_MODEL, answer)
+            self.assertIn(MAAS_PROVIDER, answer)
             self.assertIn(DEEPSEEK_MODEL_VERSION, answer)
-            self.assertIn(DEEPSEEK_MODEL_VERIFIED_ON, answer)
-        self.assertIn(DEEPSEEK_MODEL_VERSION, main.SYSTEM_PROMPT)
+        self.assertIn(DEEPSEEK_MODEL_VERSION, main.model_identity_prompt(DEEPSEEK_MODEL))
         self.assertNotIn("__MODEL_", main.SYSTEM_PROMPT)
 
     def test_source_rules_allow_attribution_and_do_not_claim_full_file_access(self):
@@ -192,8 +192,8 @@ class HealthModelTests(unittest.IsolatedAsyncioTestCase):
     async def test_health_reports_documented_mapping_without_upstream_call(self):
         with patch.object(main.data_store, "get_all_sessions", new_callable=AsyncMock, return_value={}):
             health = await main.health_check()
-        self.assertEqual(health["model"]["api_name"], DEEPSEEK_MODEL)
-        self.assertEqual(health["model"]["documented_version"], DEEPSEEK_MODEL_VERSION)
+        self.assertEqual(health["model"]["default"], DEEPSEEK_MODEL)
+        self.assertIn(DEEPSEEK_MODEL, health["model"]["available"])
         self.assertEqual(health["model"]["verified_on"], DEEPSEEK_MODEL_VERIFIED_ON)
 
 

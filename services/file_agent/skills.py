@@ -20,7 +20,7 @@ from services.resource_limits import validate_zip, bounded_member, validate_pdf
 from pathlib import Path
 from typing import Any
 
-import fitz
+import pymupdf as fitz
 from docx import Document
 from docx.shared import Inches as DocxInches, Pt as DocxPt, RGBColor as DocxColor
 from docx.oxml import OxmlElement

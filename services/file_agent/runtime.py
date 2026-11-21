@@ -319,7 +319,7 @@ def _render_office_preview(source: Path, directory: Path) -> Path:
             raise FileAgentError("LibreOffice 無法預覽此檔案，仍可下載原始檔案。")
         if staged_pdf.stat().st_size > MAX_INPUT_BYTES:
             raise FileAgentError("Office 預覽超過 50 MB 限制，請下載原檔開啟。")
-        import fitz
+        import pymupdf as fitz
         with fitz.open(staged_pdf) as pdf:
             validate_pdf(pdf)
             if not pdf.page_count:

@@ -132,7 +132,7 @@ class ChatAttachmentProcessor:
 
 
 def _pdf_needs_ocr(path):
-    import fitz
+    import pymupdf as fitz
 
     try:
         with fitz.open(path) as document:

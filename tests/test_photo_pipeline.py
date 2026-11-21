@@ -107,7 +107,7 @@ class PhotoFlowTests(unittest.IsolatedAsyncioTestCase):
             host._index_file_background.assert_awaited_once()
 
     async def test_only_scanned_pdf_dependencies_wait_for_background_text(self):
-        import fitz
+        import pymupdf as fitz
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

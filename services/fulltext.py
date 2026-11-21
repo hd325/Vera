@@ -115,7 +115,7 @@ def _extract(path, saved, ocr, gaps):
     if ext in {".xlsx", ".pptx", ".docx"}:
         validate_zip(path)
     if ext == ".pdf":
-        import fitz
+        import pymupdf as fitz
         cached = _pages(saved)
         with fitz.open(path) as doc:
             validate_pdf(doc)

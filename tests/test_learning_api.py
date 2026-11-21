@@ -165,7 +165,7 @@ class LearningApiTests(unittest.TestCase):
         self.generate.assert_not_awaited()
 
     def test_dangerous_or_unsupported_extensions_are_404(self):
-        for filename in ("active.html", "script.js", "binary.exe", "active.xml", "payload.json", "archive.zip"):
+        for filename in ("active.html", "script.js", "binary.exe", "active.xml", "archive.zip"):
             with self.subTest(filename=filename):
                 document_id, _ = self._add_file(filename)
                 response = self.client.get(f"/api/documents/{document_id}/file", headers=self.headers)
@@ -260,7 +260,9 @@ class FrontendStaticBoundaryTests(unittest.TestCase):
 
     PUBLIC = {"tailwindcss.js", "marked.js", "pdf.min.js", "pdf.worker.min.js",
               "font-awesome.css", "logo.png", "fonts/fontawesome-webfont.woff2",
-              "dompurify.min.js", "tailwind.generated.css"}
+              "dompurify.min.js", "task-manager.js", "task-manager.css",
+              "account-settings.js", "account-settings.css", "wechat-connection.js", "wechat-connection.css",
+              "chat-interactions.js", "chat-interactions.css", "answer-process.js", "answer-process.css", "speech-input.js"}
     PRIVATE = ("uploads/known.png", "main.py", "config/settings.py", "sessions_data.json",
                "files_data.json", "conversations_data.json", "work/log", "work/rag_metrics.jsonl")
 

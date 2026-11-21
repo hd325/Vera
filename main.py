@@ -4361,7 +4361,8 @@ async def analyze_upload(
                         "is_truncated": truncated,
                     }
                 except (ParserLimitError, HTTPException) as error:
-                    await queue.put({"type": "error", "detail": getattr(error, "detail", str(error))})
+                    await queue.put({"type": "error", "code": getattr(error, "status_code", 413),
+                                     "detail": getattr(error, "detail", str(error))})
                     return
                 except Exception:
                     logging.warning("Upload analysis extraction failed")
@@ -4539,6 +4540,8 @@ async def upload_file(
         raise HTTPException(status_code=422, detail=f"備註最多 {MAX_NOTES_CHARS} 字")
     if len(material_custom) > 50 or len(subject_custom) > 50:
         raise HTTPException(status_code=422, detail="資料文字過長")
+    if material_type == "other" and not material_custom:
+        raise HTTPException(status_code=422, detail="請填寫其他資料類型名稱")
     if subject != "other":
         subject_custom = ""
     if material_type != "other":

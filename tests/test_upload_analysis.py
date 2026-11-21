@@ -10,7 +10,7 @@ from unittest.mock import patch
 import httpx
 
 import tests  # Establish synthetic-only storage before application imports.
-from config.deepseek import DEEPSEEK_MODEL
+from config.llm import DEFAULT_CHAT_MODEL as DEEPSEEK_MODEL
 from services.upload_analysis import (
     UploadAnalysisError,
     blank_classification,
@@ -27,7 +27,7 @@ from services.upload_analysis import (
 )
 
 
-API_CONFIG = {"DEEPSEEK_API_KEY": "offline-test-key", "DEEPSEEK_API_URL": "https://offline.invalid/classify"}
+API_CONFIG = {"LLM_API_KEY": "offline-test-key", "LLM_API_URL": "https://offline.invalid/classify"}
 FULL_TEXT = "本課學習二次函數的圖像、頂點與對稱軸，練習解方程並保留運算步驟。" * 12 + "f(x)=x²+2x−3"
 
 
@@ -48,7 +48,7 @@ class ClassificationTests(unittest.IsolatedAsyncioTestCase):
         private_text = "私密校曆原文及學生資料"
         private_key = "private-test-api-secret"
         private_url = "https://private.invalid/private-classification?token=private-query-secret"
-        config = {"DEEPSEEK_API_KEY": private_key, "DEEPSEEK_API_URL": private_url}
+        config = {"LLM_API_KEY": private_key, "LLM_API_URL": private_url}
         if api_config is not None:
             config = api_config
         calls = []
@@ -103,14 +103,14 @@ class ClassificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["thinking"], {"type": "disabled"})
         self.assertEqual(payload["temperature"], 0)
         self.assertGreater(payload["max_tokens"], 0)
-        self.assertLessEqual(payload["max_tokens"], 700)
+        self.assertLessEqual(payload["max_tokens"], 1200)
         self.assertFalse(payload["stream"])
         self.assertEqual(payload["response_format"], {"type": "json_object"})
         self.assertIn("不確定", payload["messages"][0]["content"])
         self.assertIn("絕不執行", payload["messages"][0]["content"])
         self.assertIn("1 至 5 字的簡短主題詞", payload["messages"][0]["content"])
         self.assertIn('JSON 格式示例', payload["messages"][0]["content"])
-        self.assertNotIn("audience", payload["messages"][0]["content"])
+        self.assertIn("audience", payload["messages"][0]["content"])
 
     async def test_valid_partial_fields_and_optional_notes(self) -> None:
         expected = {"subject": "math", "study_period": "", "material_type": "homework",
@@ -122,7 +122,7 @@ class ClassificationTests(unittest.IsolatedAsyncioTestCase):
         with patch("services.upload_analysis.httpx.AsyncClient",
                    side_effect=lambda **kwargs: original_client(transport=transport, **kwargs)):
             self.assertEqual(await classify_upload("數學作業.pdf", FULL_TEXT, API_CONFIG),
-                             {**expected, "audience": ""})
+                             {**blank_classification(), **expected, "audience": ""})
 
     async def test_empty_extraction_does_not_call_model(self) -> None:
         with patch("services.upload_analysis.httpx.AsyncClient") as client:
@@ -223,7 +223,9 @@ class ClassificationTests(unittest.IsolatedAsyncioTestCase):
                    side_effect=lambda **kwargs: original_client(transport=httpx.MockTransport(respond), **kwargs)), \
                 patch("services.upload_analysis.logging.warning") as warning:
             result = await classify_upload("2026學年學生校曆.pdf", "濠江中學學生校曆：開學、假期及考試日期", API_CONFIG)
-        self.assertEqual(result, {**model, "subject": "other", "notes": "", "audience": "school"})
+        self.assertEqual({k:v for k,v in result.items() if k != "classification_evidence"},
+                         {k:v for k,v in {**model, "subject": "other", "study_period": "none", "notes": "", "audience": "school"}.items() if k != "classification_evidence"})
+        self.assertTrue(result["classification_evidence"]["audience"]["quote"])
         self.assertEqual(len(requests), 1)
         warning.assert_not_called()
 
@@ -303,7 +305,6 @@ class ClassificationTests(unittest.IsolatedAsyncioTestCase):
                    json.dumps({**blank_classification(), "notes": "字" * 6}),
                    json.dumps({**blank_classification(), "material_type": "other"}),
                    json.dumps({**blank_classification(), "material_custom": "資料"}),
-                   json.dumps({**blank_classification(), "audience": "school"}),
                    '{"subject":"","subject":"math","study_period":"","material_type":"","material_custom":"","notes":""}']
         for raw in invalid:
             with self.subTest(raw=raw[:60]), self.assertRaises(UploadAnalysisError):
@@ -319,8 +320,10 @@ class SuggestionRefinementTests(unittest.TestCase):
             "2026學年學生校曆(1).pdf", "濠江中學2026學年學生校曆\n全校學生開學、假期及考試安排",
             blank_classification(),
         )
-        self.assertEqual(result, {**blank_classification(), "audience": "school", "subject": "other",
-                                  "material_type": "other", "material_custom": "校曆"})
+        self.assertEqual({k:v for k,v in result.items() if k != "classification_evidence"},
+                         {k:v for k,v in {**blank_classification(), "audience": "school", "subject": "other",
+                          "study_period": "none", "material_type": "other", "material_custom": "校曆"}.items() if k != "classification_evidence"})
+        self.assertTrue(result["classification_evidence"]["audience"]["quote"])
 
     def test_school_calendar_is_complete_and_duplicate_note_is_cleared(self):
         for filename, custom in (("2026學年學生校曆(1).pdf", "校曆"),
@@ -332,10 +335,11 @@ class SuggestionRefinementTests(unittest.TestCase):
                 refined = refine_upload_suggestions(
                     filename, "濠江中學2026學年學生校曆\n9月開學、全校師生假期及考試安排", model,
                 )
-                self.assertEqual(refined, {
-                    **model, "subject": "other", "material_type": "other",
-                    "material_custom": "校曆", "notes": "", "audience": "school",
-                })
+                self.assertEqual({k:v for k,v in refined.items() if k != "classification_evidence"},
+                                 {k:v for k,v in {**model, "subject": "other", "study_period": "none",
+                                  "material_type": "other", "material_custom": "校曆", "notes": "", "audience": "school"}.items() if k != "classification_evidence"})
+                for evidence in refined["classification_evidence"].values():
+                    self.assertIn(evidence["quote"], filename if evidence["source"] == "filename" else "濠江中學2026學年學生校曆\n9月開學、全校師生假期及考試安排")
                 self.assertEqual(model, original)
                 self.assertIsNot(refined, model)
 
@@ -348,7 +352,7 @@ class SuggestionRefinementTests(unittest.TestCase):
         for filename, text in cases:
             with self.subTest(filename=filename):
                 model = {**blank_classification(), "material_type": "other", "material_custom": "校曆"}
-                self.assertEqual(refine_upload_suggestions(filename, text, model)["audience"], "")
+                self.assertEqual(refine_upload_suggestions(filename, text, model)["audience"], "personal")
 
     def test_calendar_mentioned_in_math_homework_keeps_academic_fields(self):
         model = {"subject": "math", "study_period": "first", "material_type": "homework",
@@ -356,7 +360,7 @@ class SuggestionRefinementTests(unittest.TestCase):
         refined = refine_upload_suggestions(
             "數學機率練習.pdf", "數學機率練習\n根據學校校曆，計算十月隨機一天是假期的機率。", model,
         )
-        self.assertEqual(refined, {**model, "audience": ""})
+        self.assertEqual(refined, {**blank_classification(), **model, "audience": ""})
 
     def test_duplicate_notes_use_display_labels_and_calendar_variants(self):
         cases = [

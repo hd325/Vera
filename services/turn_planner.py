@@ -202,7 +202,7 @@ def _conversation_excerpt(history, limit=6) -> list[dict]:
 async def _request_plan(api_config, payload, *, timeout_seconds=PLAN_TIMEOUT_SECONDS) -> dict:
     headers = {"Authorization": "Bearer " + str(api_config["LLM_API_KEY"]), "Content-Type": "application/json"}
     timeout = httpx.Timeout(connect=4.0, read=timeout_seconds, write=4.0, pool=4.0)
-    async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
+    async with httpx.AsyncClient(timeout=timeout, verify=True) as client:
         response = await asyncio.wait_for(
             client.post(str(api_config["LLM_API_URL"]), headers=headers, json=payload),
             timeout=timeout_seconds + 1)

@@ -15,6 +15,7 @@ import tests  # Establish synthetic-only storage before application imports.
 import main
 from tests.account_fixtures import fixture_accounts
 from services import teacher_skill
+from services.turn_planner import default_plan
 
 
 class TeacherSkillTests(unittest.TestCase):
@@ -45,8 +46,8 @@ class TeacherSkillTests(unittest.TestCase):
             patch.object(teacher_skill, "CORPUS_PATH", self.corpus_path),
             patch.object(main, "CONVERSATIONS_FILE", str(self.root / "conversations.json")),
             patch.object(main, "SESSIONS_FILE", str(self.root / "sessions.json")),
-            patch.object(main, "stream_deepseek", self.model_stream),
-            patch.object(main, "retrieval_permission_filter", AsyncMock(return_value={})),
+            patch.object(main, "stream_llm", self.model_stream),
+            patch.object(main, "plan_turn", AsyncMock(side_effect=lambda *a, **k: {**default_plan(), "action": "answer", "knowledge_scope": "none", "planned": True})),
             patch.object(main, "_append_rag_metrics", Mock()),
             patch("main.logging.info"), patch("main.logging.warning"), patch("main.logging.error"),
             patch.dict("sys.modules", {"services.retrieval.retriever": SimpleNamespace(
@@ -93,7 +94,7 @@ class TeacherSkillTests(unittest.TestCase):
         self.write_corpus()
         return profile
 
-    async def model_stream(self, prompt, question, think=False):
+    async def model_stream(self, prompt, question, think=False, model=None, *, images=()):
         self.prompts.append(prompt)
         yield 'data: {"type":"content","text":"測試模型答案"}\n\n'
 

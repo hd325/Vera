@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 import tests  # Establish synthetic-only storage before application imports.
 from services.knowledge import vector_store
-from services.knowledge.embedder import LocalEmbedder, TfidfEmbedder
+from services.knowledge.embedder import LocalEmbedder, TfidfEmbedder, embedding_collection_name
 
 
 class CatalogStoreTests(unittest.TestCase):
@@ -39,7 +39,7 @@ class CatalogStoreTests(unittest.TestCase):
         catalog = vector_store.get_vector_store(catalog_only=True)
         self.assertIs(catalog._collection, self.client.get_collection.return_value)
         self.client.get_collection.assert_called_once_with(
-            name=f"hk_knowledge_{LocalEmbedder.name}_{LocalEmbedder.dim}", embedding_function=None,
+            name=embedding_collection_name(LocalEmbedder), embedding_function=None,
         )
         self.client.get_or_create_collection.assert_not_called()
         vector_store.get_embedder.assert_not_called()
@@ -55,7 +55,7 @@ class CatalogStoreTests(unittest.TestCase):
         vector_store.chromadb.PersistentClient.assert_not_called()
         self.assertEqual(catalog.stats(), {
             "backend": LocalEmbedder.name, "dim": LocalEmbedder.dim,
-            "collection": f"hk_knowledge_{LocalEmbedder.name}_{LocalEmbedder.dim}", "total_chunks": 0,
+            "collection": embedding_collection_name(LocalEmbedder), "total_chunks": 0,
         })
 
     def test_catalog_statistics_do_not_initialize_embedder(self):
@@ -63,7 +63,7 @@ class CatalogStoreTests(unittest.TestCase):
         catalog = vector_store.get_vector_store(catalog_only=True)
         self.assertEqual(catalog.stats(), {
             "backend": LocalEmbedder.name, "dim": LocalEmbedder.dim,
-            "collection": f"hk_knowledge_{LocalEmbedder.name}_{LocalEmbedder.dim}", "total_chunks": 12,
+            "collection": embedding_collection_name(LocalEmbedder), "total_chunks": 12,
         })
         vector_store.get_embedder.assert_not_called()
 
@@ -82,7 +82,7 @@ class CatalogStoreTests(unittest.TestCase):
         fallback_collection.get.return_value = {"ids": ["existing-fallback-chunk"]}
         fallback_collection.count.return_value = 1
         fallback = TfidfEmbedder()
-        fallback_name = f"hk_knowledge_{fallback.name}_{fallback.dim}"
+        fallback_name = embedding_collection_name(fallback)
 
         def existing_fallback_only(*, name, embedding_function):
             self.assertIsNone(embedding_function)
@@ -128,7 +128,7 @@ class CatalogStoreTests(unittest.TestCase):
             store = vector_store.get_vector_store()
         self.assertIs(store._embedder, embedder)
         self.client.get_or_create_collection.assert_called_once_with(
-            name="hk_knowledge_fallback-fixture_123", metadata={"hnsw:space": "cosine"},
+            name=embedding_collection_name(embedder), metadata={"hnsw:space": "cosine"},
         )
 
 

@@ -11,6 +11,7 @@ import httpx
 
 import tests  # Establish synthetic-only storage before application imports.
 import main
+from tests.account_fixtures import fixture_accounts
 from services.file_agent import runtime
 from services.knowledge import embedder
 
@@ -21,19 +22,19 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             source = Path(temporary) / 'sample.pdf'
             source.write_bytes(b'%PDF-test-original')
             record = dict(id='perf-file', name='sample.pdf', original_name='sample.pdf',
-                          storage_path=str(source), audience='personal', owner='0000')
-            session = dict(account='0000', created_at=datetime.now().isoformat())
+                          storage_path=str(source), audience='personal', owner='fixture-owner')
+            session = dict(account='fixture-owner', created_at=datetime.now().isoformat())
             store = SimpleNamespace(_deleted_files={}, get_session=AsyncMock(return_value=session),
                                     find_file_by_id=AsyncMock(return_value=record))
-            with patch.object(main, 'data_store', store), patch.object(main, 'resolve_storage_path', return_value=str(source)):
+            with patch.dict(main.VALID_ACCOUNTS, fixture_accounts()), patch.object(main, 'data_store', store), patch.object(main, 'resolve_storage_path', return_value=str(source)):
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url='http://test') as client:
                     headers = {'X-Session-ID': 'fixture'}
                     for url in ['/api/files/perf-file/preview', '/api/documents/perf-file/file']:
                         first = await client.get(url, headers=headers)
                         self.assertEqual(first.status_code, 200)
                         self.assertEqual(first.content, source.read_bytes())
-                        self.assertEqual(first.headers['cache-control'], 'private, no-cache')
-                        self.assertEqual(first.headers['vary'], 'X-Session-ID')
+                        self.assertEqual(first.headers['cache-control'], 'no-store')
+                        self.assertIn('X-Session-ID', {v.strip() for v in first.headers['vary'].split(',')})
                         ranged = await client.get(url, headers={**headers, 'Range': 'bytes=0-3'})
                         self.assertEqual(ranged.status_code, 206)
                         self.assertEqual(ranged.content, b'%PDF')
@@ -48,7 +49,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
                         record['owner'] = 'someone-else'
                         denied = await client.get(url, headers={**headers, 'If-None-Match': updated.headers['etag']})
                         self.assertEqual(denied.status_code, 403)
-                        record['owner'] = '0000'
+                        record['owner'] = 'fixture-owner'
                         self.assertEqual((await client.get(url)).status_code, 401)
 
     async def test_ui_compression_and_static_revalidation(self):

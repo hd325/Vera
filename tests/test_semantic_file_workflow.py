@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import fitz
+import pymupdf as fitz
 import numpy as np
 from docx import Document
 from openpyxl import Workbook, load_workbook

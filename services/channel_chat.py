@@ -765,7 +765,7 @@ class ChannelChatController:
             path = runtime.paths[fid]
             needs_ocr = path.suffix.lower() in PHOTO_EXTENSIONS
             if path.suffix.lower() == ".pdf":
-                import fitz
+                import pymupdf as fitz
                 with fitz.open(path) as pdf:
                     if pdf.needs_pass:
                         raise HTTPException(400, "PDF已加密，請先解密。")

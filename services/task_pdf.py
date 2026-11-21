@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 
 
 _FONT_CANDIDATES = (Path("C:/Windows/Fonts/msyh.ttc"), Path("C:/Windows/Fonts/simsun.ttc"),

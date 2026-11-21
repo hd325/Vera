@@ -2,7 +2,9 @@
 
 面向學習與資料整理的 AI 助手：帶來源的全文檢索、多模型對話、照片與文件附件、練習任務，以及可選的文件編輯和微信接入。本專案由 HouKongIntellect 延續更新，公開倉庫名稱改為 **Vera**。
 
-> 更新分支狀態：本分支為 Vera 遷移中的公開預覽。已檢查空密鑰啟動、資料隔離及敏感資訊；舊版接口的全量兼容測試和最新前端整合仍待完成，尚未合併為預設穩定版本。下方安裝方式用於本機試用，請以對應提交的檢查結果為準。
+[![Application checks](https://github.com/hd325/Vera/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/hd325/Vera/actions/workflows/tests.yml)
+
+檢查結果與範圍見 [驗證記錄](docs/validation.md)。徽章顯示 `main` 的自動檢查狀態；請同時核對下載版本所對應的提交。
 
 [下載 ZIP](https://github.com/hd325/Vera/archive/refs/heads/main.zip) · [安全說明](SECURITY.md) · [第三方授權](THIRD_PARTY_NOTICES.md)
 

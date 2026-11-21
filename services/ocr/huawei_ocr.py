@@ -178,7 +178,7 @@ class HuaweiOCR:
     ) -> str:
         """文字層零費用直取；僅掃描頁轉 PNG，保留原有頁碼分隔符。"""
         try:
-            import fitz
+            import pymupdf as fitz
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         except Exception:
             if not retry:
