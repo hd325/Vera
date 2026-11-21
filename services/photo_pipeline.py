@@ -131,8 +131,8 @@ def image_parts(photos):
     return parts
 
 
-def photo_event(kind, **fields):
-    return "data: " + json.dumps({"type": kind, **fields}, ensure_ascii=False) + "\n\n"
+def photo_event(event_type, **fields):
+    return "data: " + json.dumps({"type": event_type, **fields}, ensure_ascii=False) + "\n\n"
 
 
 async def stream_photo_reply(host, photos, prompt, question, *, think, model):
