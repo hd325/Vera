@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 import httpx
 
-from config.deepseek import deepseek_request_options
+from config.llm import llm_request_options
 
 
 MAX_MATERIAL_CHARS = 3000
@@ -151,9 +151,13 @@ def validate_quiz_json(raw_content: str, *, question_types: list[str], count: in
         if type(source_id) is not int or source_id not in available:
             raise QuizValidationError("题目引用的资料编号不在本次素材中")
         source = available[source_id]
-        evidence = _nonempty_text(item["evidence"], "原文依据", 200)
+        evidence = _nonempty_text(item["evidence"], "原文依据", 4000)
         evidence_text = re.sub(r"\s+", "", evidence)
         source_text = re.sub(r"\s+", "", source["content"])
+        if 0 < len(evidence_text) < 20 and len(source_text) >= 20 and evidence_text in source_text:
+            from services.school_quiz import source_quote
+            evidence, _, _ = source_quote(source["content"], evidence)
+            evidence_text = re.sub(r"\s+", "", evidence)
         if len(source_text) < 20:
             if evidence != source["content"].strip():
                 raise QuizValidationError("不足20字符的原文片段必须完整原样引用")
@@ -186,20 +190,27 @@ def validate_quiz_json(raw_content: str, *, question_types: list[str], count: in
 
 async def generate_quiz(document_id: str, *, question_types: list[str], count: int = 5,
                         difficulty: str = "medium", api_config: Mapping[str, Any],
-                        store: Any = None) -> dict[str, Any]:
-    """Use the application's existing DeepSeek URL/key after route authorization.
+                        store: Any = None, authorized_material=None) -> dict[str, Any]:
+    """Use the application's existing LLM (Huawei Cloud MaaS) URL/key after route authorization.
 
     Validation failures are reported without repairing or inventing missing items.
     The route can return {code: 200, data: await generate_quiz(...)}.
     """
     validate_options(question_types, count, difficulty)
+    if authorized_material is not None:
+        from services.school_quiz import generate_school_quiz
+        selected, sources = await authorized_material()
+        async def no_progress(**values):
+            pass
+        return await generate_school_quiz(document_id, sources=sources, filename=selected.get("name") or "文件練習題",
+            question_types=question_types, count=count, difficulty=difficulty, api_config=api_config, progress=no_progress)
     try:
         material = await asyncio.to_thread(load_document_material, document_id, store)
     except QuizValidationError:
         raise
     except Exception as exc:
         raise QuizGenerationError("文件原文暂时无法读取，请稍后重试") from exc
-    if not api_config.get("DEEPSEEK_API_KEY") or not api_config.get("DEEPSEEK_API_URL"):
+    if not api_config.get("LLM_API_KEY") or not api_config.get("LLM_API_URL"):
         raise QuizGenerationError("出题服务暂时未配置，请联系管理员")
     type_names = "、".join(QUESTION_TYPES[t] for t in question_types)
     example = {"questions": [{
@@ -224,15 +235,15 @@ async def generate_quiz(document_id: str, *, question_types: list[str], count: i
         "以下仅为JSON字段格式示例，示例占位文字不得当作资料或题目，实际题数须符合本次要求："
         + json.dumps(example, ensure_ascii=False)
     )
-    payload = {**deepseek_request_options(think=False), "temperature": .1, "stream": False,
+    payload = {**llm_request_options(think=False), "temperature": .1, "stream": False,
                "max_tokens": min(16_000, max(2_000, count * 900)),
                "response_format": {"type": "json_object"},
                "messages": [{"role": "system", "content": system},
                             {"role": "user", "content": "以下是所选文件的有序资料：\n\n" + material["text"]}]}
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0), verify=True) as client:
-            response = await client.post(str(api_config["DEEPSEEK_API_URL"]),
-                                         headers={"Authorization": "Bearer " + str(api_config["DEEPSEEK_API_KEY"]),
+            response = await client.post(str(api_config["LLM_API_URL"]),
+                                         headers={"Authorization": "Bearer " + str(api_config["LLM_API_KEY"]),
                                                   "Content-Type": "application/json"}, json=payload)
             response.raise_for_status()
             body = response.json()

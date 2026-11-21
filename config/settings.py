@@ -15,7 +15,9 @@ load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 
 def _string(name: str, default: str = "") -> str:
-    return os.getenv(name, default).strip()
+    # New Vera deployments use VERA_*; keep existing HOUKONG_* deployments valid.
+    alias = "VERA_" + name[len("HOUKONG_"):] if name.startswith("HOUKONG_") else name
+    return os.getenv(alias, os.getenv(name, default)).strip()
 
 
 def _path(name: str, default: Path) -> Path:
@@ -57,6 +59,8 @@ PORT = _port()
 RELOAD = _boolean("HOUKONG_RELOAD")
 
 DEEPSEEK_API_KEY = _string("DEEPSEEK_API_KEY")
+MAAS_API_KEY = _string("MAAS_API_KEY")
+MAAS_API_URL = _string("MAAS_API_URL", "https://api.modelarts-maas.com/v2/chat/completions")
 DEEPSEEK_API_URL = _string(
     "DEEPSEEK_API_URL", "https://api.deepseek.com/chat/completions"
 )
@@ -66,11 +70,22 @@ TENCENT_SECRET_ID = _string("TENCENT_SECRET_ID")
 TENCENT_SECRET_KEY = _string("TENCENT_SECRET_KEY")
 TENCENT_OCR_REGION = _string("TENCENT_OCR_REGION", "ap-guangzhou")
 SERPER_API_KEY = _string("SERPER_API_KEY")
+SERPAPI_KEY = _string("SERPAPI_KEY")
 HUAWEI_AK = _string("HUAWEI_AK")
 HUAWEI_SK = _string("HUAWEI_SK")
 HUAWEI_PROJECT_ID = _string("HUAWEI_PROJECT_ID")
 HUAWEI_OCR_REGION = _string("HUAWEI_OCR_REGION", "cn-north-4")
 ENABLE_FILE_AGENT = _boolean("ENABLE_FILE_AGENT", False)
+ENABLE_WECHAT = _boolean("ENABLE_WECHAT", False)
+CAPTCHA_APP_KEY = _string("CAPTCHA_APP_KEY")
+CAPTCHA_APP_SECRET = _string("CAPTCHA_APP_SECRET")
+CAPTCHA_APP_ID = _string("CAPTCHA_APP_ID")
+CAPTCHA_APP_ID_SECRET = _string("CAPTCHA_APP_ID_SECRET")
+# Legacy integrations may import these names. No account is provisioned from a
+# shared default password, and there is no fixed signing or database secret.
+DEFAULT_USER_PASSWORD = _string("DEFAULT_USER_PASSWORD")
+JWT_SECRET = _string("JWT_SECRET")
+DATABASE_PASSWORD = _string("DATABASE_PASSWORD")
 PARSER_TIMEOUT = 120
 MAX_FILE_TASKS = 1
 
@@ -80,6 +95,8 @@ def is_huawei_ocr_configured() -> bool:
 
 # The default needs no model download, torch installation, or external API.
 EMBEDDING_BACKEND = _string("EMBEDDING_BACKEND", "tfidf").lower()
+if EMBEDDING_BACKEND not in {"tfidf", "local", "tencent", "auto"}:
+    raise ValueError("EMBEDDING_BACKEND must be tfidf, local, tencent or auto")
 LOCAL_EMBEDDING_MODEL = _string(
     "LOCAL_EMBEDDING_MODEL", "shibing624/text2vec-base-chinese"
 )
@@ -96,7 +113,7 @@ def _default_chroma_dir() -> Path:
     local_app_data = _string("LOCALAPPDATA")
     if os.name == "nt" and not str(default).isascii() and local_app_data:
         identity = hashlib.sha256(str(DATA_DIR).encode("utf-8")).hexdigest()[:16]
-        return Path(local_app_data) / "HouKongIntellectPublic" / identity / "chroma_db"
+        return Path(local_app_data) / "VeraPublic" / identity / "chroma_db"
     return default
 
 

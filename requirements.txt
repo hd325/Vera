@@ -8,10 +8,14 @@ python-dotenv>=1.2.2,<2
 python-multipart>=0.0.32,<0.1
 requests>=2.34.2,<3
 chromadb>=1.5.9,<1.6
-PyMuPDF>=1.24.14,<2
+PyMuPDF>=1.28.2,<2
 python-docx>=1.2,<2
 python-pptx>=1.0.2,<2
 openpyxl>=3.1.5,<4
+numpy>=2.5.1,<3
+jsonschema>=4.26,<5
+lxml>=6.1.1,<7
+sympy>=1.14,<2
 # Official modular SDKs; compatible common dependency verified in PyPI metadata.
 # Do not also install the all-products tencentcloud-sdk-python package.
 tencentcloud-sdk-python-common==3.1.187

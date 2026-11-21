@@ -50,7 +50,7 @@ class SecurityHeaders:
                     values = [(key, value) for key, value in values if key.lower() != b"cache-control"]
                     values.append((b"cache-control", b"no-store"))
                 if scope.get("path") == "/":
-                    values.append((b"content-security-policy", b"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'; frame-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'"))
+                    values.append((b"content-security-policy", b"default-src 'self'; script-src 'self' 'unsafe-inline' https://api-js.jumdata.com https://turing.captcha.gtimg.com https://turing.captcha.qcloud.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api-js.jumdata.com https://turing.captcha.gtimg.com https://turing.captcha.qcloud.com; frame-src 'self' blob: https://api-js.jumdata.com https://turing.captcha.gtimg.com https://turing.captcha.qcloud.com; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'"))
                 message = {**message, "headers": values}
             await send(message)
         try:

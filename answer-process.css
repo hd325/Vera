@@ -1,0 +1,602 @@
+/* GPT-style answer process timeline: muted gray steps, links, reasoning & quick settings. */
+:root,
+[data-theme="light"] {
+  --ap-header-color: #6b7280;
+  --ap-header-hover: #1f2937;
+  --ap-step-color: #6b7280;
+  --ap-step-active: #1f2937;
+  --ap-step-detail: #8a93a2;
+  --ap-note-color: #4b5563;
+  --ap-think-color: #5b6472;
+  --ap-rail: #e5e7eb;
+  --ap-rail-active: #93c5fd;
+  --ap-chip-bg: #f8fafc;
+  --ap-chip-border: #e2e8f0;
+  --ap-chip-hover-bg: #eff6ff;
+  --ap-chip-hover-border: #93c5fd;
+  --ap-chip-hover-text: #1d4ed8;
+  --ap-badge-bg: #f3f4f6;
+  --ap-badge-text: #6b7280;
+  --ap-popover-bg: #ffffff;
+  --ap-popover-border: #e5e7eb;
+  --ap-popover-shadow: 0 12px 32px rgba(15, 23, 42, 0.12), 0 2px 6px rgba(15, 23, 42, 0.06);
+  --ap-shimmer-base: #6b7280;
+  --ap-shimmer-hi: #111827;
+  --ap-warn: #b45309;
+  --ap-error: #dc2626;
+}
+
+[data-theme="dark"] {
+  --ap-header-color: #9ca3af;
+  --ap-header-hover: #f3f4f6;
+  --ap-step-color: #8f98a6;
+  --ap-step-active: #e5e7eb;
+  --ap-step-detail: #778091;
+  --ap-note-color: #c7cdd6;
+  --ap-think-color: #b4bcc8;
+  --ap-rail: rgba(156, 163, 175, 0.22);
+  --ap-rail-active: rgba(96, 165, 250, 0.6);
+  --ap-chip-bg: rgba(255, 255, 255, 0.04);
+  --ap-chip-border: rgba(255, 255, 255, 0.11);
+  --ap-chip-hover-bg: rgba(59, 130, 246, 0.14);
+  --ap-chip-hover-border: rgba(96, 165, 250, 0.45);
+  --ap-chip-hover-text: #93c5fd;
+  --ap-badge-bg: rgba(255, 255, 255, 0.06);
+  --ap-badge-text: #9ca3af;
+  --ap-popover-bg: #1e293b;
+  --ap-popover-border: rgba(148, 163, 184, 0.22);
+  --ap-popover-shadow: 0 16px 38px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.25);
+  --ap-shimmer-base: #9ca3af;
+  --ap-shimmer-hi: #f9fafb;
+  --ap-warn: #fbbf24;
+  --ap-error: #f87171;
+}
+
+.message-row.ai .message-content:has(.answer-process:not([hidden])) {
+  min-width: min(100%, 420px);
+  max-width: min(84%, 820px);
+}
+
+.answer-process {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ap-step-color);
+}
+
+.answer-process[hidden],
+.answer-process [hidden] {
+  display: none !important;
+}
+
+/* Header row: "用時 12.4 秒 · 4 個步驟 ⌄"   [Model] [⚙ 設定] */
+.ap-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: nowrap;
+  min-height: 28px;
+  padding: 2px 0;
+}
+
+.ap-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  padding: 3px 6px 3px 2px;
+  margin-left: -2px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ap-header-color);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.ap-toggle:hover {
+  color: var(--ap-header-hover);
+  background: var(--ap-badge-bg);
+}
+
+.ap-toggle:focus-visible,
+.ap-step-toggle:focus-visible,
+.ap-link:focus-visible {
+  outline: 2px solid var(--border-focus, #3b82f6);
+  outline-offset: 2px;
+}
+
+.ap-status-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
+.ap-status-dot.is-running::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--blue-500, #3b82f6);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.22);
+  animation: apPulse 1.5s ease-in-out infinite;
+}
+
+.ap-status-dot.is-done {
+  display: none;
+}
+
+.ap-status-dot.is-warning::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ap-warn);
+}
+
+.ap-status-dot.is-error::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ap-error);
+}
+
+.ap-header-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.answer-process.is-running .ap-header-text {
+  background: linear-gradient(
+    90deg,
+    var(--ap-shimmer-base) 0%,
+    var(--ap-shimmer-hi) 45%,
+    var(--ap-shimmer-base) 90%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: apShimmer 2.1s linear infinite;
+}
+
+.ap-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  color: currentColor;
+  opacity: 0.8;
+  transition: transform 0.18s ease;
+}
+
+.answer-process.is-open .ap-chevron {
+  transform: rotate(180deg);
+}
+
+.ap-header-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.ap-model-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--ap-badge-bg);
+  color: var(--ap-badge-text);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+/* Expanded GPT-style muted timeline body */
+.ap-body {
+  margin-top: 6px;
+  margin-left: 6px;
+  padding: 2px 0 4px 14px;
+  border-left: 2px solid var(--ap-rail);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.answer-process.is-running .ap-body {
+  border-left-color: var(--ap-rail-active);
+}
+
+/* GPT-style soft gray commentary paragraph */
+.ap-note {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.68;
+  color: var(--ap-note-color);
+  overflow-wrap: anywhere;
+}
+
+/* Individual step entry */
+.ap-step {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.ap-step-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ap-step-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  min-width: 0;
+  flex: 1;
+}
+
+.ap-step-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 20px;
+  flex: 0 0 auto;
+  color: var(--ap-step-color);
+}
+
+.ap-step-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ap-step.is-running .ap-step-icon {
+  color: var(--blue-500, #3b82f6);
+}
+
+.ap-step.is-warning .ap-step-icon {
+  color: var(--ap-warn);
+}
+
+.ap-step.is-error .ap-step-icon {
+  color: var(--ap-error);
+}
+
+.ap-spinner {
+  width: 13px;
+  height: 13px;
+  border: 1.8px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: apSpin 0.8s linear infinite;
+}
+
+.ap-step-copy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 7px;
+  min-width: 0;
+  flex: 1;
+}
+
+.ap-step-index {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ap-step-detail);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.ap-step.is-running .ap-step-index {
+  color: var(--blue-500, #3b82f6);
+}
+
+.ap-step-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ap-step-color);
+  overflow-wrap: anywhere;
+}
+
+.ap-step.is-running .ap-step-title {
+  color: var(--ap-step-active);
+}
+
+.ap-step.is-warning .ap-step-title {
+  color: var(--ap-warn);
+}
+
+.ap-step.is-error .ap-step-title {
+  color: var(--ap-error);
+}
+
+.ap-step-detail {
+  font-size: 12px;
+  color: var(--ap-step-detail);
+  overflow-wrap: anywhere;
+}
+
+.ap-step-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  padding-top: 1px;
+}
+
+.ap-step-duration {
+  font-size: 11px;
+  color: var(--ap-step-detail);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ap-step-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ap-step-detail);
+  cursor: pointer;
+  transition: transform 0.16s ease, color 0.15s ease, background-color 0.15s ease;
+}
+
+.ap-step-toggle:hover {
+  color: var(--ap-header-hover);
+  background: var(--ap-badge-bg);
+}
+
+.ap-step-toggle[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+.ap-step-toggle svg {
+  width: 13px;
+  height: 13px;
+  transition: transform 0.16s ease;
+}
+
+/* Clickable links inside steps (web URLs, school docs, files, memories) */
+.ap-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-left: 23px;
+  min-width: 0;
+}
+
+.ap-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 3px 9px;
+  border: 1px solid var(--ap-chip-border);
+  border-radius: 999px;
+  background: var(--ap-chip-bg);
+  color: var(--ap-step-color);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.ap-link:hover {
+  background: var(--ap-chip-hover-bg);
+  border-color: var(--ap-chip-hover-border);
+  color: var(--ap-chip-hover-text);
+  text-decoration: none;
+}
+
+.ap-link-icon {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  opacity: 0.78;
+}
+
+.ap-link-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.ap-link-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+  font-weight: 500;
+}
+
+.ap-link-sub {
+  font-size: 11px;
+  color: var(--ap-step-detail);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 165px;
+  padding-left: 6px;
+  border-left: 1px solid var(--ap-chip-border);
+}
+
+.ap-link:hover .ap-link-sub {
+  color: inherit;
+  opacity: 0.85;
+}
+
+.ap-link-ext {
+  font-size: 11px;
+  opacity: 0.7;
+  flex: 0 0 auto;
+}
+
+.ap-links-more {
+  padding: 3px 8px;
+  border: 1px dashed var(--ap-chip-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ap-step-detail);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.ap-links-more:hover {
+  color: var(--ap-header-hover);
+  border-color: var(--ap-chip-hover-border);
+}
+
+/* Deep thinking narrative inside the think step (GPT gray text style) */
+.ap-think-body {
+  margin: 2px 0 2px 23px;
+  padding: 2px 6px 2px 12px;
+  border-left: 1.5px solid var(--ap-rail);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ap-think-color);
+  max-height: 220px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ap-rail) transparent;
+}
+
+.ap-think-body::-webkit-scrollbar {
+  width: 5px;
+}
+
+.ap-think-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ap-think-body::-webkit-scrollbar-thumb {
+  background: var(--ap-rail);
+  border-radius: 999px;
+}
+
+.ap-think-body::-webkit-scrollbar-thumb:hover {
+  background: var(--ap-step-detail);
+}
+
+.ap-think-body p {
+  margin: 0 0 0.55em;
+}
+
+.ap-think-body p:last-child {
+  margin-bottom: 0;
+}
+
+.ap-think-body ul,
+.ap-think-body ol {
+  margin: 0.25em 0 0.55em;
+  padding-left: 1.25em;
+}
+
+.ap-think-body code {
+  font-size: 0.92em;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--ap-badge-bg);
+}
+
+.ap-think-body pre {
+  margin: 0.5em 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--ap-badge-bg);
+  overflow-x: auto;
+}
+
+/* Hide legacy overlapping single-line status bars when AnswerProcess is mounted */
+.message-content.has-answer-process > .retrieval-status,
+.message-content.has-answer-process > .web-status,
+.message-content.has-answer-process > .file-task-status,
+.message-content.has-answer-process > .photo-model-status,
+.message-content.has-answer-process > .message-meta > .stream-timer {
+  display: none !important;
+}
+
+@keyframes apPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.85); }
+}
+
+@keyframes apSpin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes apShimmer {
+  0% { background-position: 120% 0; }
+  100% { background-position: -100% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ap-status-dot.is-running::before,
+  .ap-spinner,
+  .answer-process.is-running .ap-header-text {
+    animation: none;
+  }
+  .answer-process.is-running .ap-header-text {
+    background: none;
+    color: var(--ap-header-color);
+  }
+}
+
+@media (max-width: 768px) {
+  .message-row.ai .message-content:has(.answer-process:not([hidden])) {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .ap-header {
+    flex-wrap: wrap;
+  }
+  .ap-body {
+    margin-left: 4px;
+    padding-left: 11px;
+  }
+  .ap-links,
+  .ap-think-body {
+    padding-left: 0;
+    margin-left: 0;
+  }
+  .ap-link-label {
+    max-width: 180px;
+  }
+}

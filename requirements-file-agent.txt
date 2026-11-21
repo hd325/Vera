@@ -1,3 +1,5 @@
 # Optional local file-editing tools. Install core requirements first.
 markitdown[docx,pptx,xlsx,pdf]==0.1.9
 mcp==1.30.0
+markdown-it-py>=4.2,<5
+pywin32>=312; sys_platform == "win32"

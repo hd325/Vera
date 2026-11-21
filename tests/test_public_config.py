@@ -50,6 +50,9 @@ class PublicConfigurationTests(unittest.TestCase):
         self.env = os.environ.copy()
         for key in CONFIG_KEYS:
             self.env.pop(key, None)
+        for key in list(self.env):
+            if key.startswith("VERA_"):
+                self.env.pop(key)
         self.env["PYTHONPATH"] = str(self.app)
         self.env["LOCALAPPDATA"] = str(self.base / "local")
 
@@ -104,7 +107,7 @@ class PublicConfigurationTests(unittest.TestCase):
     def test_windows_unicode_store_is_isolated_from_private_namespace(self):
         values = self.read_settings({"HOUKONG_DATA_DIR": "资料"})
         if os.name == "nt":
-            self.assertIn("HouKongIntellectPublic", Path(values["chroma"]).parts)
+            self.assertIn("VeraPublic", Path(values["chroma"]).parts)
             self.assertNotIn("HouKongIntellect", Path(values["chroma"]).parts)
             other = self.read_settings({"HOUKONG_DATA_DIR": "其他资料"})
             self.assertNotEqual(values["chroma"], other["chroma"])

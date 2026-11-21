@@ -14,11 +14,15 @@ _temp_parent = Path(tempfile.gettempdir()).resolve()
 _test_root = Path(tempfile.mkdtemp(prefix="houkong-synthetic-tests-")).resolve()
 (_test_root / ".synthetic-fixture").write_text("synthetic test data only", encoding="utf-8")
 for _key in ("DEEPSEEK_API_KEY", "TENCENT_SECRET_ID", "TENCENT_SECRET_KEY", "SERPER_API_KEY",
-             "HUAWEI_AK", "HUAWEI_SK", "HUAWEI_PROJECT_ID"):
+             "HUAWEI_AK", "HUAWEI_SK", "HUAWEI_PROJECT_ID", "MAAS_API_KEY",
+             "CAPTCHA_APP_KEY", "CAPTCHA_APP_SECRET", "CAPTCHA_APP_ID", "CAPTCHA_APP_ID_SECRET",
+             "HOUKONG_WECHAT_SERVICE_TOKEN", "HOUKONG_WECHAT_BROKER_URL", "SERPAPI_KEY"):
     os.environ[_key] = ""
 os.environ.update(HOUKONG_DATA_DIR=str(_test_root / "data"),
                   HOUKONG_CHROMA_DIR=str(_test_root / "chroma"),
-                  EMBEDDING_BACKEND="tfidf", ENABLE_FILE_AGENT="true")
+                  VERA_DATA_DIR=str(_test_root / "data"), VERA_CHROMA_DIR=str(_test_root / "chroma"),
+                  HOUKONG_WECHAT_ENV_FILE=str(_test_root / "wechat" / ".env"),
+                  EMBEDDING_BACKEND="tfidf", ENABLE_FILE_AGENT="true", ENABLE_WECHAT="false")
 
 
 def _cleanup():

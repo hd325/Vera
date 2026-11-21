@@ -33,12 +33,13 @@ import uuid
 from typing import Dict, List, Optional
 from services.resource_limits import ParserLimitError
 
+MAX_DOCUMENT_CHARS = 1_000_000
 MAX_DOCUMENT_CHUNKS = 512
 
 logger = logging.getLogger("chunker")
 
 # 页码标记：--- 第12页 --- （允许中英文空格/数字）
-_PAGE_MARKER = re.compile(r"^---\s*第\s*(\d+)\s*页\s*---$", re.MULTILINE)
+_PAGE_MARKER = re.compile(r"^---\s*第\s*(\d+)\s*[页頁]\s*---$", re.MULTILINE)
 
 # 句子边界（中文 + 英文）
 _SENT_SPLIT = re.compile(r"(?<=[。！？!?；;\n])")
@@ -84,7 +85,7 @@ class PageAwareChunker:
         """
         if not raw_text or not raw_text.strip():
             return []
-        if len(raw_text) > 1_000_000:
+        if len(raw_text) > MAX_DOCUMENT_CHARS:
             raise ParserLimitError("索引文字最多 100 萬字元，請分拆資料。")
 
         if document_id is None:

@@ -1,0 +1,9 @@
+{
+  "id": "houkong-wechat",
+  "name": "HouKong WeChat business bridge",
+  "version": "0.1.0",
+  "description": "Trusted channel identity, canonical context, restricted business tools and typed local binding broker.",
+  "kind": "context-engine",
+  "contracts": { "tools": ["houkong_business"] },
+  "configSchema": { "type": "object", "additionalProperties": false, "properties": {} }
+}

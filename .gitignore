@@ -40,6 +40,9 @@ __pycache__/
 htmlcov/
 
 # Generated output and backups
+runtime/
+outputs/
+services/evaluation/testset.json
 dist/
 build/
 *.egg-info/
@@ -55,6 +58,12 @@ backups/
 *.mov
 *.wav
 *.mp3
+*.mkv
+*.webm
+*.avi
+*.m4a
+*.ogg
+*.flac
 corpus.json
 teacher-profile.json
 

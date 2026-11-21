@@ -1,0 +1,10 @@
+{
+  "name": "@houkong/openclaw-wechat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Owner-scoped HouKongIntellect bridge for a pinned local OpenClaw Gateway",
+  "engines": { "node": ">=24.16.0 <25 || >=26.1.0" },
+  "openclaw": { "extensions": ["./index.js"], "compat": { "pluginApi": ">=2026.11.3" } },
+  "scripts": { "test": "node --test tests/*.test.mjs" }
+}

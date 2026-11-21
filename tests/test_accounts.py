@@ -126,14 +126,14 @@ class AccountApiTests(unittest.TestCase):
 
     def test_missing_model_key_produces_friendly_event_without_network(self):
         async def collect():
-            return [event async for event in main.stream_deepseek("prompt", "question")]
+            return [event async for event in main.stream_llm("prompt", "question")]
 
-        with patch.dict(main.API_CONFIG, {"DEEPSEEK_API_KEY": ""}), patch("main.httpx.AsyncClient") as client:
+        with patch.dict(main.API_CONFIG, {"LLM_API_KEY": ""}), patch("main.httpx.AsyncClient") as client:
             events = asyncio.run(collect())
             client.assert_not_called()
         self.assertEqual(len(events), 1)
-        self.assertIn('"type": "error"', events[0])
-        self.assertIn("DEEPSEEK_API_KEY", events[0])
+        self.assertEqual(json.loads(events[0].removeprefix("data: "))["type"], "error")
+        self.assertIn("MAAS_API_KEY", events[0])
 
 
 class AccountCliTests(unittest.TestCase):
